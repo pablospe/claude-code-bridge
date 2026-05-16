@@ -1,4 +1,4 @@
 {
   "include": [],
-  "references": []
+  "references": [{ "path": "packages/core" }]
 }
