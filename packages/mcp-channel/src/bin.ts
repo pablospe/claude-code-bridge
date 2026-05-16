@@ -7,6 +7,12 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 
 async function main(): Promise<void> {
   const connectTimeoutMs = Number(process.env.CCB_CONNECT_TIMEOUT_MS ?? DEFAULT_CONNECT_TIMEOUT_MS);
+  if (!Number.isFinite(connectTimeoutMs) || connectTimeoutMs <= 0) {
+    console.error(
+      `ccb-channel-server: CCB_CONNECT_TIMEOUT_MS must be a positive number (got ${process.env.CCB_CONNECT_TIMEOUT_MS})`,
+    );
+    process.exit(2);
+  }
   const endpoint = process.env.CCB_BRIDGE_ENDPOINT;
   const sessionId = process.env.CCB_SESSION_ID;
   if (!endpoint) {
@@ -54,19 +60,22 @@ async function main(): Promise<void> {
     },
   });
 
+  let connectTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
       controlClient.connect(),
-      new Promise<never>((_resolve, reject) =>
-        setTimeout(
+      new Promise<never>((_resolve, reject) => {
+        connectTimer = setTimeout(
           () => reject(new Error(`connect timed out after ${connectTimeoutMs}ms`)),
           connectTimeoutMs,
-        ),
-      ),
+        );
+      }),
     ]);
   } catch (err) {
     console.error(`ccb-channel-server: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(3);
+  } finally {
+    if (connectTimer) clearTimeout(connectTimer);
   }
 
   const stdio = new StdioServerTransport();

@@ -22,6 +22,39 @@ async function findUnusedPort(): Promise<number> {
 }
 
 test(
+  "ccb-channel-server bin exits with code 2 when CCB_CONNECT_TIMEOUT_MS is not a positive number",
+  async () => {
+    const child = Bun.spawn({
+      cmd: ["bun", BIN_PATH],
+      env: {
+        ...process.env,
+        CCB_BRIDGE_ENDPOINT: "127.0.0.1:1",
+        CCB_SESSION_ID: "bin-bad-timeout",
+        CCB_CONNECT_TIMEOUT_MS: "abc",
+      },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    try {
+      const exitCode = await Promise.race([
+        child.exited,
+        new Promise<number>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("bin did not exit within 5s")), 5000),
+        ),
+      ]);
+      expect(exitCode).toBe(2);
+      const stderr = await new Response(child.stderr).text();
+      expect(stderr).toMatch(/must be a positive number/);
+    } finally {
+      if (!child.killed) child.kill("SIGKILL");
+    }
+  },
+  { timeout: 10_000 },
+);
+
+test(
   "ccb-channel-server bin exits with code 3 when connect times out",
   async () => {
     const port = await findUnusedPort();

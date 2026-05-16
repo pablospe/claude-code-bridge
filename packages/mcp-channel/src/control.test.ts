@@ -115,6 +115,11 @@ test("parseEndpoint rejects invalid forms", () => {
   expect(() => parseEndpoint("[::1]")).toThrow();
 });
 
+test("parseEndpoint rejects port > 65535", () => {
+  expect(() => parseEndpoint("127.0.0.1:65536")).toThrow();
+  expect(() => parseEndpoint("127.0.0.1:99999")).toThrow();
+});
+
 test("ControlServer destroys pre-hello sockets after helloTimeoutMs", async () => {
   const server = new ControlServer();
   const info = await server.listen({ host: "127.0.0.1", port: 0, helloTimeoutMs: 80 });
