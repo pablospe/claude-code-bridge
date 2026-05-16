@@ -1,3 +1,4 @@
+export { EventBus } from "./bus.ts";
 export type { BridgeEvent } from "./events.ts";
 export { JsonlEventStore } from "./store.ts";
 export type { Supervisor, SupervisorContext } from "./supervisor.ts";
