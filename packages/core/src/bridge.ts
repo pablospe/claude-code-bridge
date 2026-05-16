@@ -1,3 +1,4 @@
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { EventBus } from "./bus.ts";
 import type { BridgeEvent } from "./events.ts";
@@ -24,12 +25,19 @@ export interface BridgeOptions {
   supervisorFactory: SupervisorFactory;
 }
 
+type SessionState = "starting" | "open" | "closing" | "closed";
+
 interface Session {
   readonly id: string;
   readonly bus: EventBus;
   readonly store: JsonlEventStore;
   readonly supervisor: Supervisor;
+  state: SessionState;
+  /** Fire-and-forget append promises emitted from the supervisor path. */
+  readonly pending: Set<Promise<void>>;
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Bridge facade implementing the ClaudeCodeBridge API.
@@ -55,27 +63,49 @@ export class Bridge implements ClaudeCodeBridge {
   async startSession(_options: StartSessionOptions): Promise<SessionHandle> {
     const id = crypto.randomUUID();
     const bus = new EventBus();
-    const store = new JsonlEventStore(join(this.#storeDir, `${id}.jsonl`));
+    const storePath = join(this.#storeDir, `${id}.jsonl`);
+    const store = new JsonlEventStore(storePath);
     const supervisor = this.#supervisorFactory(id);
 
-    const session: Session = { id, bus, store, supervisor };
+    const session: Session = {
+      id,
+      bus,
+      store,
+      supervisor,
+      state: "starting",
+      pending: new Set(),
+    };
     this.#sessions.set(id, session);
 
-    await supervisor.start({
-      sessionId: id,
-      emit: (event) => {
-        this.#dispatch(session, event);
-      },
-    });
+    try {
+      // Persist session.started before any supervisor-emitted event so the
+      // store/bus ordering is "session.started leads."
+      await this.#emitAwaited(session, { type: "session.started", sessionId: id });
+      await supervisor.start({
+        sessionId: id,
+        emit: (event) => {
+          this.#emitFromSupervisor(session, event);
+        },
+      });
+      session.state = "open";
+    } catch (err) {
+      // Best-effort teardown of the partially-built session. Remove the
+      // half-written JSONL file so a failed start does not leak state.
+      this.#sessions.delete(id);
+      session.state = "closed";
+      bus.close();
+      await store.close().catch(() => undefined);
+      await rm(storePath, { force: true }).catch(() => undefined);
+      throw err;
+    }
 
-    await this.#dispatchAsync(session, { type: "session.started", sessionId: id });
     return { id };
   }
 
   async sendMessage(sessionId: string, content: string, _options?: SendOptions): Promise<string> {
     const session = this.#requireSession(sessionId);
     const messageId = crypto.randomUUID();
-    await this.#dispatchAsync(session, {
+    await this.#emitAwaited(session, {
       type: "message.sent",
       sessionId,
       messageId,
@@ -88,7 +118,11 @@ export class Bridge implements ClaudeCodeBridge {
   events(sessionId: string, _options?: EventsOptions): AsyncIterable<BridgeEvent> {
     const session = this.#sessions.get(sessionId);
     if (!session) {
-      return emptyIterable();
+      // Empty iterable: a closed EventBus produces a subscriber that ends
+      // immediately, so consumers get a clean for-await with no events.
+      const emptyBus = new EventBus();
+      emptyBus.close();
+      return emptyBus.subscribe();
     }
     return session.bus.subscribe();
   }
@@ -101,10 +135,16 @@ export class Bridge implements ClaudeCodeBridge {
   async close(sessionId: string): Promise<void> {
     const session = this.#sessions.get(sessionId);
     if (!session) return;
-    await this.#dispatchAsync(session, { type: "session.ended", sessionId });
+    session.state = "closing";
+    await this.#emitAwaited(session, { type: "session.ended", sessionId });
     await session.supervisor.close(sessionId);
+    // Drain in-flight supervisor-emitted appends before closing the store.
+    if (session.pending.size > 0) {
+      await Promise.allSettled([...session.pending]);
+    }
     session.bus.close();
     await session.store.close();
+    session.state = "closed";
     this.#sessions.delete(sessionId);
   }
 
@@ -113,6 +153,9 @@ export class Bridge implements ClaudeCodeBridge {
    * that need the full history without subscribing live.
    */
   async readStoredEvents(sessionId: string): Promise<BridgeEvent[]> {
+    if (!UUID_RE.test(sessionId)) {
+      throw new Error("invalid sessionId");
+    }
     const session = this.#sessions.get(sessionId);
     const store = session?.store ?? new JsonlEventStore(join(this.#storeDir, `${sessionId}.jsonl`));
     return store.readAll();
@@ -126,25 +169,31 @@ export class Bridge implements ClaudeCodeBridge {
     return session;
   }
 
-  #dispatch(session: Session, event: BridgeEvent): void {
+  /**
+   * Fire-and-forget emit path for events the supervisor pushes. The bus emit
+   * is synchronous; the store append is tracked in session.pending so close()
+   * can drain it. Drops events once the session is closing/closed.
+   */
+  #emitFromSupervisor(session: Session, event: BridgeEvent): void {
+    if (session.state === "closing" || session.state === "closed") {
+      return;
+    }
     session.bus.emit(event);
-    // Fire-and-forget persistence for supervisor-emitted events. Errors are
-    // surfaced as an unhandled rejection rather than swallowed silently.
-    void session.store.append(event);
+    const p = session.store.append(event);
+    session.pending.add(p);
+    p.catch((err) => {
+      console.error(`Bridge: failed to persist event for session ${session.id}: ${String(err)}`);
+    }).finally(() => {
+      session.pending.delete(p);
+    });
   }
 
-  async #dispatchAsync(session: Session, event: BridgeEvent): Promise<void> {
+  /**
+   * Bridge-initiated emit path. Awaits persistence so the caller can sequence
+   * subsequent work after the event is durable.
+   */
+  async #emitAwaited(session: Session, event: BridgeEvent): Promise<void> {
     session.bus.emit(event);
     await session.store.append(event);
   }
-}
-
-function emptyIterable(): AsyncIterable<BridgeEvent> {
-  return {
-    [Symbol.asyncIterator](): AsyncIterator<BridgeEvent> {
-      return {
-        next: () => Promise.resolve({ value: undefined, done: true }),
-      };
-    },
-  };
 }
