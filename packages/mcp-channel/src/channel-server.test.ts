@@ -13,6 +13,21 @@ const ChannelNotificationSchema = NotificationSchema.extend({
   }),
 });
 
+async function until(
+  predicate: () => boolean,
+  opts: { timeout?: number; interval?: number } = {},
+): Promise<void> {
+  const timeout = opts.timeout ?? 1000;
+  const interval = opts.interval ?? 5;
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeout) {
+      throw new Error(`until: predicate did not become true within ${timeout}ms`);
+    }
+    await new Promise<void>((r) => setTimeout(r, interval));
+  }
+}
+
 test("createChannelServer lists bridge_reply, bridge_progress, bridge_done tools", async () => {
   const { server } = createChannelServer({ sessionId: "s1" });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
@@ -127,9 +142,7 @@ test("deliver emits notifications/claude/channel with session_id and message_id 
   await Promise.all([handle.server.connect(serverTransport), client.connect(clientTransport)]);
 
   await handle.deliver("hello", { messageId: "m2", meta: { foo: "bar" } });
-
-  // Drain microtasks so the in-memory transport delivers the notification.
-  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  await until(() => received.length > 0);
 
   expect(received).toHaveLength(1);
   expect(received[0]?.content).toBe("hello");
@@ -157,7 +170,7 @@ test("deliver without messageId still includes session_id in meta", async () => 
   await Promise.all([handle.server.connect(serverTransport), client.connect(clientTransport)]);
 
   await handle.deliver("just content");
-  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  await until(() => received.length > 0);
 
   expect(received).toHaveLength(1);
   expect(received[0]?.meta).toMatchObject({ session_id: "sess-B" });
@@ -238,7 +251,7 @@ test("deliver accepts valid identifier meta keys with string values", async () =
   await Promise.all([handle.server.connect(serverTransport), client.connect(clientTransport)]);
 
   await handle.deliver("hello", { meta: { request_id: "x" } });
-  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  await until(() => received.length > 0);
 
   expect(received).toHaveLength(1);
   expect(received[0]?.meta).toMatchObject({ session_id: "sess-Y", request_id: "x" });

@@ -40,8 +40,7 @@ test("hello handshake completes between ControlClient and ControlServer", async 
     onDeliver: () => {},
   });
   await client.connect();
-  // give the server time to receive the hello
-  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  await until(() => helloSessionId === "sess-1");
   expect(helloSessionId).toBe("sess-1");
 
   await client.close();
@@ -66,7 +65,7 @@ test("ControlClient.sendTool delivers to ControlServer tool listener", async () 
   await client.connect();
 
   await client.sendTool("bridge_reply", { content: "x", final: true });
-  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  await until(() => calls.length > 0);
 
   expect(calls).toEqual([
     { sessionId: "sess-2", name: "bridge_reply", args: { content: "x", final: true } },
@@ -86,10 +85,6 @@ test("ControlServer.deliver triggers ControlClient.onDeliver", async () => {
   };
   const got: DeliverCall[] = [];
 
-  const helloPromise = new Promise<void>((resolve) => {
-    server.on("hello", () => resolve());
-  });
-
   const client = new ControlClient({
     endpoint: info.endpoint,
     sessionId: "sess-3",
@@ -98,10 +93,9 @@ test("ControlServer.deliver triggers ControlClient.onDeliver", async () => {
     },
   });
   await client.connect();
-  await helloPromise;
 
   await server.deliver("sess-3", "incoming", { messageId: "m3", meta: { k: "v" } });
-  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  await until(() => got.length > 0);
 
   expect(got).toEqual([{ content: "incoming", opts: { messageId: "m3", meta: { k: "v" } } }]);
 
@@ -340,7 +334,7 @@ test("ControlServer drops malformed control messages without crashing", async ()
         sock.write(`${JSON.stringify({ type: "garbage" })}\n`);
         // valid hello finally
         sock.write(`${JSON.stringify({ type: "hello", sessionId: "ok-1" })}\n`);
-        await new Promise<void>((r) => setTimeout(r, 30));
+        await until(() => helloIds.length > 0);
         expect(helloIds).toEqual(["ok-1"]);
         expect(toolCalls).toHaveLength(0);
         sock.end();
@@ -361,12 +355,12 @@ test("ControlServer buffers partial JSON lines until newline", async () => {
 
   type ToolCall = { sessionId: string; name: string; args: Record<string, unknown> };
   const calls: ToolCall[] = [];
+  const helloIds: string[] = [];
+  server.on("hello", (sessionId) => {
+    helloIds.push(sessionId);
+  });
   server.on("tool", (sessionId, name, args) => {
     calls.push({ sessionId, name, args });
-  });
-
-  const helloPromise = new Promise<void>((resolve) => {
-    server.on("hello", () => resolve());
   });
 
   // Connect via raw socket to send a partial line.
@@ -375,7 +369,7 @@ test("ControlServer buffers partial JSON lines until newline", async () => {
     const sock = net.createConnection({ host: info.host, port: info.port }, async () => {
       try {
         sock.write(`${JSON.stringify({ type: "hello", sessionId: "raw-1" })}\n`);
-        await helloPromise;
+        await until(() => helloIds.length > 0);
         const line = JSON.stringify({ type: "tool", name: "bridge_done", args: {} });
         const half = Math.floor(line.length / 2);
         sock.write(line.slice(0, half));
@@ -383,7 +377,7 @@ test("ControlServer buffers partial JSON lines until newline", async () => {
         // Tool listener should not have fired yet.
         expect(calls).toHaveLength(0);
         sock.write(`${line.slice(half)}\n`);
-        await new Promise<void>((r) => setTimeout(r, 20));
+        await until(() => calls.length > 0);
         expect(calls).toEqual([{ sessionId: "raw-1", name: "bridge_done", args: {} }]);
         sock.end();
         resolve();
