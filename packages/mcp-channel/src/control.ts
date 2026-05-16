@@ -6,27 +6,40 @@ import {
   type Server as NetServer,
   type Socket,
 } from "node:net";
+import * as z from "zod/v4";
 
-/**
- * Control protocol envelope shapes. JSON-lines on a single TCP connection.
- * Reserve `type` as the discriminator for forward compatibility.
- */
-type HelloMessage = { type: "hello"; sessionId: string };
-type HelloAckMessage = { type: "hello_ack" };
-type DeliverMessage = {
-  type: "deliver";
-  content: string;
-  messageId?: string;
-  meta?: Record<string, unknown>;
-};
-type ToolMessage = {
-  type: "tool";
-  name: string;
-  args: Record<string, unknown>;
-};
-type CloseMessage = { type: "close" };
+const HelloMessageSchema = z.object({
+  type: z.literal("hello"),
+  sessionId: z.string(),
+});
+const HelloAckMessageSchema = z.object({
+  type: z.literal("hello_ack"),
+});
+const DeliverMessageSchema = z.object({
+  type: z.literal("deliver"),
+  content: z.string(),
+  messageId: z.string().optional(),
+  meta: z.record(z.string(), z.string()).optional(),
+});
+const ToolMessageSchema = z.object({
+  type: z.literal("tool"),
+  name: z.string(),
+  args: z.record(z.string(), z.unknown()),
+});
+const CloseMessageSchema = z.object({
+  type: z.literal("close"),
+});
 
-type ControlMessage = HelloMessage | HelloAckMessage | DeliverMessage | ToolMessage | CloseMessage;
+const ControlMessageSchema = z.discriminatedUnion("type", [
+  HelloMessageSchema,
+  HelloAckMessageSchema,
+  DeliverMessageSchema,
+  ToolMessageSchema,
+  CloseMessageSchema,
+]);
+
+type DeliverMessage = z.infer<typeof DeliverMessageSchema>;
+type ControlMessage = z.infer<typeof ControlMessageSchema>;
 
 export interface ControlServerListenOptions {
   readonly host?: string;
@@ -41,7 +54,7 @@ export interface ControlServerEndpoint {
 
 export interface DeliverWireOptions {
   readonly messageId?: string;
-  readonly meta?: Record<string, unknown>;
+  readonly meta?: Record<string, string>;
 }
 
 export interface ControlServerEvents {
@@ -279,11 +292,19 @@ function readLines(socket: Socket, onMessage: (msg: ControlMessage) => void | Pr
       const line = buffer.slice(0, newlineIndex);
       buffer = buffer.slice(newlineIndex + 1);
       if (line.length > 0) {
+        let value: unknown;
         try {
-          const parsed = JSON.parse(line) as ControlMessage;
-          void onMessage(parsed);
-        } catch {
-          // Drop unparseable line; do not break the stream.
+          value = JSON.parse(line);
+        } catch (err) {
+          console.error(`control: malformed json line: ${String(err)}`);
+          newlineIndex = buffer.indexOf("\n");
+          continue;
+        }
+        const parsed = ControlMessageSchema.safeParse(value);
+        if (!parsed.success) {
+          console.error(`control: invalid control message: ${parsed.error.message}`);
+        } else {
+          void onMessage(parsed.data);
         }
       }
       newlineIndex = buffer.indexOf("\n");

@@ -94,6 +94,47 @@ test("ControlServer.deliver triggers ControlClient.onDeliver", async () => {
   await server.close();
 });
 
+test("ControlServer drops malformed control messages without crashing", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  type ToolCall = { sessionId: string; name: string; args: Record<string, unknown> };
+  const toolCalls: ToolCall[] = [];
+  const helloIds: string[] = [];
+  server.on("hello", (sessionId) => {
+    helloIds.push(sessionId);
+  });
+  server.on("tool", (sessionId, name, args) => {
+    toolCalls.push({ sessionId, name, args });
+  });
+
+  const net = await import("node:net");
+  await new Promise<void>((resolve, reject) => {
+    const sock = net.createConnection({ host: info.host, port: info.port }, async () => {
+      try {
+        // wrong type for sessionId
+        sock.write(`${JSON.stringify({ type: "hello", sessionId: 99 })}\n`);
+        // missing required field
+        sock.write(`${JSON.stringify({ type: "tool", name: "x" })}\n`);
+        // unknown type
+        sock.write(`${JSON.stringify({ type: "garbage" })}\n`);
+        // valid hello finally
+        sock.write(`${JSON.stringify({ type: "hello", sessionId: "ok-1" })}\n`);
+        await new Promise<void>((r) => setTimeout(r, 30));
+        expect(helloIds).toEqual(["ok-1"]);
+        expect(toolCalls).toHaveLength(0);
+        sock.end();
+        resolve();
+      } catch (e) {
+        reject(e);
+      }
+    });
+    sock.on("error", reject);
+  });
+
+  await server.close();
+});
+
 test("ControlServer buffers partial JSON lines until newline", async () => {
   const server = new ControlServer();
   const info = await server.listen({ host: "127.0.0.1", port: 0 });

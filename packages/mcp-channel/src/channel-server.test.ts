@@ -167,6 +167,86 @@ test("deliver without messageId still includes session_id in meta", async () => 
   await handle.server.close();
 });
 
+test("invalid tool args return isError without invoking onTool", async () => {
+  let invocations = 0;
+  const { server } = createChannelServer({
+    sessionId: "s1",
+    onTool: () => {
+      invocations++;
+    },
+  });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test-client", version: "0.0.0" });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+  const missingFinal = await client.callTool({
+    name: "bridge_reply",
+    arguments: { content: "x" },
+  });
+  expect(missingFinal.isError).toBe(true);
+
+  const wrongType = await client.callTool({
+    name: "bridge_reply",
+    arguments: { content: "x", final: "yes" },
+  });
+  expect(wrongType.isError).toBe(true);
+
+  const missingContent = await client.callTool({
+    name: "bridge_progress",
+    arguments: { messageId: "m1" },
+  });
+  expect(missingContent.isError).toBe(true);
+
+  expect(invocations).toBe(0);
+
+  const good = await client.callTool({
+    name: "bridge_reply",
+    arguments: { content: "x", final: true },
+  });
+  expect(good.isError).toBeUndefined();
+  expect(invocations).toBe(1);
+
+  await client.close();
+  await server.close();
+});
+
+test("deliver rejects meta keys that are not valid identifiers", async () => {
+  const handle = createChannelServer({ sessionId: "sess-X" });
+  await expect(
+    handle.deliver("hello", { meta: { "request-id": "x" } as Record<string, string> }),
+  ).rejects.toThrow(/invalid meta key/);
+});
+
+test("deliver rejects non-string meta values", async () => {
+  const handle = createChannelServer({ sessionId: "sess-X" });
+  await expect(
+    handle.deliver("hello", { meta: { request_id: 123 as unknown as string } }),
+  ).rejects.toThrow(/meta value must be string/);
+});
+
+test("deliver accepts valid identifier meta keys with string values", async () => {
+  const handle = createChannelServer({ sessionId: "sess-Y" });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test-client", version: "0.0.0" });
+
+  const received: Array<{ content: string; meta?: Record<string, unknown> }> = [];
+  client.setNotificationHandler(ChannelNotificationSchema, (n) => {
+    const params = n.params as { content: string; meta?: Record<string, unknown> };
+    received.push({ content: params.content, meta: params.meta });
+  });
+
+  await Promise.all([handle.server.connect(serverTransport), client.connect(clientTransport)]);
+
+  await handle.deliver("hello", { meta: { request_id: "x" } });
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+  expect(received).toHaveLength(1);
+  expect(received[0]?.meta).toMatchObject({ session_id: "sess-Y", request_id: "x" });
+
+  await client.close();
+  await handle.server.close();
+});
+
 test("createChannelServer advertises claude/channel and tools capabilities", async () => {
   const { server } = createChannelServer({ sessionId: "s1" });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();

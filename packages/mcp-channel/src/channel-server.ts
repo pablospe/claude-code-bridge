@@ -4,8 +4,33 @@ import {
   ListToolsRequestSchema,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
+import * as z from "zod/v4";
 
 export type ToolName = "bridge_reply" | "bridge_progress" | "bridge_done";
+
+const META_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+const BridgeReplyArgsSchema = z.object({
+  content: z.string(),
+  final: z.boolean(),
+  messageId: z.string().optional(),
+});
+
+const BridgeProgressArgsSchema = z.object({
+  content: z.string(),
+  messageId: z.string().optional(),
+});
+
+const BridgeDoneArgsSchema = z.object({
+  reason: z.string().optional(),
+  messageId: z.string().optional(),
+});
+
+const TOOL_ARG_SCHEMAS: Record<ToolName, z.ZodTypeAny> = {
+  bridge_reply: BridgeReplyArgsSchema,
+  bridge_progress: BridgeProgressArgsSchema,
+  bridge_done: BridgeDoneArgsSchema,
+};
 
 export type OnToolCallback = (
   name: ToolName,
@@ -19,7 +44,7 @@ export interface CreateChannelServerOptions {
 
 export interface DeliverOptions {
   readonly messageId?: string;
-  readonly meta?: Readonly<Record<string, unknown>>;
+  readonly meta?: Readonly<Record<string, string>>;
 }
 
 export interface ChannelServerHandle {
@@ -121,9 +146,16 @@ export function createChannelServer(options: CreateChannelServerOptions): Channe
         content: [{ type: "text" as const, text: `unknown tool: ${name}` }],
       };
     }
-    const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+    const rawArgs = request.params.arguments ?? {};
+    const parsed = TOOL_ARG_SCHEMAS[name].safeParse(rawArgs);
+    if (!parsed.success) {
+      return {
+        isError: true,
+        content: [{ type: "text" as const, text: parsed.error.message }],
+      };
+    }
     try {
-      await onTool?.(name, args);
+      await onTool?.(name, parsed.data as Record<string, unknown>);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return {
@@ -137,7 +169,19 @@ export function createChannelServer(options: CreateChannelServerOptions): Channe
   });
 
   const deliver = async (content: string, opts?: DeliverOptions): Promise<void> => {
-    const meta: Record<string, unknown> = { ...(opts?.meta ?? {}), session_id: sessionId };
+    const meta: Record<string, string> = {};
+    if (opts?.meta) {
+      for (const [key, value] of Object.entries(opts.meta)) {
+        if (!META_KEY_PATTERN.test(key)) {
+          throw new Error(`invalid meta key: ${key}`);
+        }
+        if (typeof value !== "string") {
+          throw new Error(`meta value must be string: ${key}`);
+        }
+        meta[key] = value;
+      }
+    }
+    meta.session_id = sessionId;
     if (opts?.messageId !== undefined) {
       meta.message_id = opts.messageId;
     }
