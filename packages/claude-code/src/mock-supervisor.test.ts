@@ -2,8 +2,9 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Bridge, type BridgeEvent } from "@ccb/core";
-import { mockSupervisorFactory } from "./index.ts";
+import { Bridge, type BridgeEvent, type SupervisorContext } from "@ccb/core";
+import { ControlServer } from "@ccb/mcp-channel";
+import { MockSupervisor, mockSupervisorFactory } from "./index.ts";
 
 let storeDir: string;
 
@@ -22,15 +23,25 @@ async function collect(
 ): Promise<BridgeEvent[]> {
   const timeoutMs = opts.timeoutMs ?? 2000;
   const events: BridgeEvent[] = [];
-  const start = Date.now();
-  for await (const ev of iter) {
-    events.push(ev);
-    if (predicate(ev)) return events;
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`collect: timeout after ${timeoutMs}ms`);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`collect: timeout after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  const loop = (async () => {
+    for await (const ev of iter) {
+      events.push(ev);
+      if (predicate(ev)) return events;
     }
+    return events;
+  })();
+  try {
+    return await Promise.race([loop, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  return events;
 }
 
 test("MockSupervisor echoes input via channel + control loop", async () => {
@@ -89,6 +100,78 @@ test("MockSupervisor close completes promptly", async () => {
 
   const start = Date.now();
   await bridge.close(id);
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(500);
+});
+
+test("MockSupervisor throws on double start", async () => {
+  const sup = new MockSupervisor();
+  const ctx: SupervisorContext = {
+    sessionId: "00000000-0000-0000-0000-00000000000a",
+    emit: () => {},
+  };
+  await sup.start(ctx);
+  await expect(sup.start(ctx)).rejects.toThrow("supervisor already started");
+  await sup.close(ctx.sessionId);
+  const probe = new ControlServer();
+  const endpoint = await probe.listen({ host: "127.0.0.1", port: 0 });
+  await probe.close();
+  expect(endpoint.port).toBeGreaterThan(0);
+});
+
+test("MockSupervisor echoes back-to-back messages in submission order", async () => {
+  const bridge = new Bridge({ storeDir, supervisorFactory: mockSupervisorFactory() });
+  const { id } = await bridge.startSession({});
+
+  const replies: string[] = [];
+  const iterator = bridge.events(id);
+
+  const collector = (async () => {
+    for await (const ev of iterator) {
+      if (ev.type === "agent.reply") {
+        replies.push(ev.content);
+        if (replies.length === 3) return;
+      }
+    }
+  })();
+
+  // Submit three messages in the same tick to exercise echo ordering.
+  await Promise.all([
+    bridge.sendMessage(id, "a"),
+    bridge.sendMessage(id, "b"),
+    bridge.sendMessage(id, "c"),
+  ]);
+  await collector;
+
+  expect(replies).toEqual(["echo: a", "echo: b", "echo: c"]);
+  await bridge.close(id);
+});
+
+test("MockSupervisor.sendMessage rejects unknown session ids", async () => {
+  const sup = new MockSupervisor();
+  const ctx: SupervisorContext = {
+    sessionId: "00000000-0000-0000-0000-00000000000b",
+    emit: () => {},
+  };
+  await sup.start(ctx);
+  await expect(sup.sendMessage("not-the-session", "m1", "hi")).rejects.toThrow(/unknown session/);
+  await sup.close(ctx.sessionId);
+});
+
+test("collect helper rejects when stream stays silent", async () => {
+  const iter: AsyncIterable<BridgeEvent> = {
+    [Symbol.asyncIterator]() {
+      return {
+        next(): Promise<IteratorResult<BridgeEvent>> {
+          return new Promise(() => {});
+        },
+      };
+    },
+  };
+  const start = Date.now();
+  await expect(collect(iter, () => true, { timeoutMs: 50 })).rejects.toThrow(
+    /collect: timeout after 50ms/,
+  );
   const elapsed = Date.now() - start;
   expect(elapsed).toBeLessThan(500);
 });
