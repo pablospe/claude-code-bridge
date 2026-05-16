@@ -56,3 +56,15 @@ Do what's asked, nothing more, nothing less.
 ## GitHub CLI
 
 Use `/gh` skill for `gh` CLI patterns (issues, PRs, review comments, deployments).
+
+
+## Subagents
+
+When ever possible, use subagents not only to break down complex tasks into
+smaller, more focused agents; but also to keep the context window of each agent
+small, which helps with performance and accuracy. Also use subagents in parallel
+when possible to further speed up execution.
+
+Skip subagents for trivial work (one-line edits, config tweaks — dispatch
+overhead exceeds the work) or anything that needs in-session judgment (PLAN
+edits, design discussions, terminal-driven smoke tests).
