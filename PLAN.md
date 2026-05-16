@@ -265,6 +265,7 @@ Success criteria:
 - consumer can subscribe to events while the turn is running
 - `MockSupervisor` covers unit and CI tests
 - a real Claude Code smoke test proves the stdio MCP channel server path
+- manual smoke procedure documented in SMOKE.md with helper scripts under scripts/ (scripts/smoke-manual.sh for the three-terminal walkthrough; scripts/smoke-scripted.ts for a best-effort gated automation, skipped when CCB_RUN_REAL_CLAUDE is unset or when claude refuses to boot without a TTY)
 - PTY/node-pty is not the semantic protocol. Manual smoke inherits its TTY from the user's terminal; managed launch wraps `claude` in node-pty to satisfy its boot-time TTY check (verified empirically: `claude` exits to --print when stdout is not a TTY). The PTY must not carry reply/progress data in either case.
 
 Milestone 1 has two implementation tracks:
