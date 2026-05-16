@@ -1,0 +1,19 @@
+{
+  "name": "@ccb/mcp-channel",
+  "private": true,
+  "type": "module",
+  "version": "0.0.1",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "ccb-channel-server": "./src/bin.ts"
+  },
+  "dependencies": {
+    "@ccb/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.0"
+  }
+}
