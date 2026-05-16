@@ -1,4 +1,6 @@
-import type { FileSink } from "bun";
+import { createWriteStream, type WriteStream } from "node:fs";
+import { mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { BridgeEvent } from "./events.ts";
 
 /**
@@ -8,21 +10,27 @@ import type { BridgeEvent } from "./events.ts";
  * log is small enough that materializing the full list is simpler than an
  * AsyncIterable. If logs grow beyond memory budgets a streaming variant can
  * be added without changing append().
+ *
+ * Appends are serialized through an internal promise chain so concurrent
+ * callers cannot interleave partial writes. The parent directory is created
+ * lazily on the first append.
  */
 export class JsonlEventStore {
   readonly #path: string;
-  #writer: FileSink | undefined;
+  #stream: WriteStream | undefined;
+  #chain: Promise<void> = Promise.resolve();
+  #closed = false;
+  #dirEnsured = false;
 
   constructor(path: string) {
     this.#path = path;
   }
 
-  async append(event: BridgeEvent): Promise<void> {
-    if (!this.#writer) {
-      this.#writer = Bun.file(this.#path).writer();
-    }
-    this.#writer.write(`${JSON.stringify(event)}\n`);
-    await this.#writer.flush();
+  append(event: BridgeEvent): Promise<void> {
+    const next = this.#chain.then(() => this.#writeLine(event));
+    // Swallow on the chain so one failure doesn't poison subsequent appends.
+    this.#chain = next.catch(() => undefined);
+    return next;
   }
 
   async readAll(): Promise<BridgeEvent[]> {
@@ -35,17 +43,62 @@ export class JsonlEventStore {
       return [];
     }
     const out: BridgeEvent[] = [];
-    for (const line of text.split("\n")) {
-      if (line.length === 0) continue;
-      out.push(JSON.parse(line) as BridgeEvent);
+    const lines = text.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line === undefined || line.length === 0) continue;
+      try {
+        out.push(JSON.parse(line) as BridgeEvent);
+      } catch (err) {
+        console.warn(
+          `JsonlEventStore: skipping malformed line ${i + 1} in ${this.#path}: ${String(err)}`,
+        );
+      }
     }
     return out;
   }
 
   async close(): Promise<void> {
-    if (this.#writer) {
-      await this.#writer.end();
-      this.#writer = undefined;
+    this.#closed = true;
+    // Drain any in-flight appends before tearing down the stream.
+    await this.#chain.catch(() => undefined);
+    if (this.#stream) {
+      const stream = this.#stream;
+      this.#stream = undefined;
+      await new Promise<void>((resolve, reject) => {
+        stream.end((err?: Error | null) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
     }
+  }
+
+  async #writeLine(event: BridgeEvent): Promise<void> {
+    if (this.#closed) {
+      throw new Error("JsonlEventStore is closed");
+    }
+    await this.#ensureDir();
+    const stream = this.#ensureStream();
+    const line = `${JSON.stringify(event)}\n`;
+    await new Promise<void>((resolve, reject) => {
+      stream.write(line, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+
+  async #ensureDir(): Promise<void> {
+    if (this.#dirEnsured) return;
+    await mkdir(dirname(this.#path), { recursive: true });
+    this.#dirEnsured = true;
+  }
+
+  #ensureStream(): WriteStream {
+    if (!this.#stream) {
+      this.#stream = createWriteStream(this.#path, { flags: "a" });
+    }
+    return this.#stream;
   }
 }
