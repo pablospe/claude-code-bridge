@@ -10,6 +10,15 @@
         "typescript": "^5",
       },
     },
+    "packages/claude-code": {
+      "name": "@ccb/claude-code",
+      "version": "0.0.1",
+      "dependencies": {
+        "@ccb/core": "workspace:*",
+        "@ccb/mcp-channel": "workspace:*",
+        "@modelcontextprotocol/sdk": "^1.29.0",
+      },
+    },
     "packages/core": {
       "name": "@ccb/core",
       "version": "0.0.1",
@@ -45,6 +54,8 @@
     "@biomejs/cli-win32-arm64": ["@biomejs/cli-win32-arm64@2.4.15", "", { "os": "win32", "cpu": "arm64" }, "sha512-ouhkYdlhp/1GghEJPdWwD/Vi3gQ1nFxuSpMolWsbq3Lsq3QUR4jl6UdhhscdCugKU5vOEuMiJhvKj66O0OCq+w=="],
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.4.15", "", { "os": "win32", "cpu": "x64" }, "sha512-zBrGq5mx5wwpnow4+2BxUvleDM+GNd4sLbPaMapsSLQLD0NGRCquqPBTgN+7XkUteHvj7M+BstuI8tmnV7+HgQ=="],
+
+    "@ccb/claude-code": ["@ccb/claude-code@workspace:packages/claude-code"],
 
     "@ccb/core": ["@ccb/core@workspace:packages/core"],
 

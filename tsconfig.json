@@ -1,4 +1,8 @@
 {
   "include": [],
-  "references": [{ "path": "packages/core" }, { "path": "packages/mcp-channel" }]
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/mcp-channel" },
+    { "path": "packages/claude-code" }
+  ]
 }
