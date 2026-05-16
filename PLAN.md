@@ -186,7 +186,7 @@ Then add Bun workspaces manually:
     "apps/*"
   ],
   "scripts": {
-    "test": "bun test",
+    "test": "bun test --pass-with-no-tests",
     "typecheck": "tsc -b",
     "lint": "bunx biome check .",
     "format": "bunx biome format --write ."
@@ -197,6 +197,8 @@ Then add Bun workspaces manually:
   }
 }
 ```
+
+Bootstrap creates root scaffold files only — `package.json`, `tsconfig.base.json`, `tsconfig.json` (with `references: []`), `biome.json`, `.gitignore`, `.editorconfig`, `bun.lock`. Per-package directories (`packages/core`, etc.) are created by their owning milestone tasks, not at bootstrap. The `packages/*` and `apps/*` workspace globs pick them up as they appear. `bun test` uses `--pass-with-no-tests` so the bootstrap smoke check passes before any tests exist.
 
 If a template is later used, prefer a minimal Bun TypeScript library/workspace template only. Avoid full-stack templates that add React, Hono, databases, Docker, Tailwind, or deployment assumptions before the bridge loop is working.
 
@@ -224,14 +226,20 @@ packages/process
   preferred cross-platform backend; tmux is optional and Unix/WSL-only.
 
 packages/http
-  optional REST/WebSocket adapter for UIs like T3 Code
+  Post-M1. Optional REST/WebSocket adapter for UIs like T3 Code.
 
 packages/acp
-  optional ACP-compatible facade for OpenClaw-style integrations
+  Post-M1. Optional ACP-compatible facade for OpenClaw-style integrations.
 
 apps/ccb
   developer CLI for testing sessions locally
 ```
+
+M1 package set (each created by its owning task, not at bootstrap):
+
+- **Required:** `packages/core`, `packages/mcp-channel`, `packages/claude-code`, `apps/ccb`.
+- **Conditional:** `packages/process` — only if managed launch is attempted in M1; manual-smoke-only paths don't need it.
+- **Post-M1:** `packages/http`, `packages/acp`.
 
 ## First Milestone
 
