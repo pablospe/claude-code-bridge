@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -236,6 +236,51 @@ test("readAll tolerates a trailing partial line without a warning", async () => 
     expect(warnCalls).toBe(0);
   } finally {
     console.warn = originalWarn;
+  }
+});
+
+test("JsonlEventStore attaches an 'error' listener to its WriteStream", async () => {
+  // Spy on node:fs.createWriteStream so we can capture the actual stream the
+  // store opens, then assert (a) the listener was installed and (b) emitting
+  // an error on it doesn't crash the process and is logged via console.error.
+  // Without the listener, Node re-routes to uncaughtException and the process
+  // dies; this test would not survive that.
+  const fs = await import("node:fs");
+  const spy = spyOn(fs, "createWriteStream");
+  const originalError = console.error;
+  const errs: string[] = [];
+  console.error = (msg?: unknown) => {
+    errs.push(String(msg));
+  };
+  try {
+    const path = join(dir, "events.jsonl");
+    const store = new JsonlEventStore(path);
+    // Materialize the underlying write stream.
+    await store.append({ type: "session.started", sessionId: "s1" });
+
+    expect(spy).toHaveBeenCalled();
+    // spy.mock.results[0].value is the WriteStream returned from the
+    // call-through. Use it to inspect listener count and emit a synthetic
+    // error.
+    const result = spy.mock.results[0];
+    if (!result || result.type !== "return") {
+      throw new Error("spy did not capture a returned stream");
+    }
+    const stream = result.value as import("node:fs").WriteStream;
+    expect(stream.listenerCount("error")).toBeGreaterThanOrEqual(1);
+
+    // Simulate an out-of-band stream error. With a listener attached this
+    // is safe; without one Node would crash with uncaughtException.
+    stream.emit("error", new Error("simulated"));
+
+    // The listener logs via console.error including the simulated error
+    // string. Assert the spy captured it.
+    expect(errs.some((m) => m.includes("simulated"))).toBe(true);
+
+    await store.close();
+  } finally {
+    spy.mockRestore();
+    console.error = originalError;
   }
 });
 

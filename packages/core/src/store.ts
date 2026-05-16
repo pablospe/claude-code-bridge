@@ -105,7 +105,16 @@ export class JsonlEventStore {
 
   #ensureStream(): WriteStream {
     if (!this.#stream) {
-      this.#stream = createWriteStream(this.#path, { flags: "a" });
+      const stream = createWriteStream(this.#path, { flags: "a" });
+      // Out-of-band stream errors (lazy-open failures, ENOSPC mid-stream, EIO,
+      // autoDestroy fallout) are emitted on the stream's 'error' event. With
+      // no listener, Node would re-route to uncaughtException and crash the
+      // process. Log instead so per-write callbacks still surface their own
+      // errors normally.
+      stream.on("error", (err) => {
+        console.error(`JsonlEventStore: stream error on ${this.#path}: ${String(err)}`);
+      });
+      this.#stream = stream;
     }
     return this.#stream;
   }
