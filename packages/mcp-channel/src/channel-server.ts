@@ -5,8 +5,16 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 
+export type ToolName = "bridge_reply" | "bridge_progress" | "bridge_done";
+
+export type OnToolCallback = (
+  name: ToolName,
+  args: Record<string, unknown>,
+) => void | Promise<void>;
+
 export interface CreateChannelServerOptions {
   readonly sessionId: string;
+  readonly onTool?: OnToolCallback;
 }
 
 export interface ChannelServerHandle {
@@ -75,9 +83,16 @@ const TOOLS: readonly Tool[] = [
   },
 ];
 
+const TOOL_NAMES = new Set<ToolName>(["bridge_reply", "bridge_progress", "bridge_done"]);
+
+function isToolName(name: string): name is ToolName {
+  return TOOL_NAMES.has(name as ToolName);
+}
+
 export function createChannelServer(options: CreateChannelServerOptions): ChannelServerHandle {
   // sessionId is captured for future use (deliver in step 3).
   void options.sessionId;
+  const { onTool } = options;
 
   const server = new Server(
     { name: "ccb", version: "0.0.1" },
@@ -94,8 +109,27 @@ export function createChannelServer(options: CreateChannelServerOptions): Channe
     return { tools: TOOLS.map((t) => ({ ...t })) };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, () => {
-    throw new Error("not implemented");
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const name = request.params.name;
+    if (!isToolName(name)) {
+      return {
+        isError: true,
+        content: [{ type: "text" as const, text: `unknown tool: ${name}` }],
+      };
+    }
+    const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+    try {
+      await onTool?.(name, args);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        isError: true,
+        content: [{ type: "text" as const, text: message }],
+      };
+    }
+    return {
+      content: [{ type: "text" as const, text: "ok" }],
+    };
   });
 
   return { server };
