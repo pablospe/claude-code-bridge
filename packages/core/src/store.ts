@@ -44,6 +44,11 @@ export class JsonlEventStore {
     }
     const out: BridgeEvent[] = [];
     const lines = text.split(/\r?\n/);
+    // If the file doesn't end with a newline the final element is a partial
+    // write from a concurrent append-in-flight. Drop it rather than warning.
+    if (!text.endsWith("\n")) {
+      lines.pop();
+    }
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (line === undefined || line.length === 0) continue;
@@ -59,9 +64,12 @@ export class JsonlEventStore {
   }
 
   async close(): Promise<void> {
-    this.#closed = true;
-    // Drain any in-flight appends before tearing down the stream.
+    if (this.#closed) return;
+    // Drain any in-flight appends BEFORE flipping the closed flag so a
+    // fire-and-forget append in flight on the chain doesn't get rejected
+    // by #writeLine's closed check.
     await this.#chain.catch(() => undefined);
+    this.#closed = true;
     if (this.#stream) {
       const stream = this.#stream;
       this.#stream = undefined;

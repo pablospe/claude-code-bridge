@@ -93,6 +93,11 @@ export class Bridge implements ClaudeCodeBridge {
       // half-written JSONL file so a failed start does not leak state.
       this.#sessions.delete(id);
       session.state = "closed";
+      // Drain any supervisor-emitted appends that happened before the throw
+      // so store.close doesn't race with in-flight writes.
+      if (session.pending.size > 0) {
+        await Promise.allSettled([...session.pending]);
+      }
       bus.close();
       await store.close().catch(() => undefined);
       await rm(storePath, { force: true }).catch(() => undefined);

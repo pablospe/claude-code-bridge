@@ -204,6 +204,41 @@ test("concurrent appends preserve submission order and persist all events", asyn
   }
 });
 
+test("close drains an in-flight append rather than dropping it", async () => {
+  const path = join(dir, "events.jsonl");
+  const store = new JsonlEventStore(path);
+
+  // Fire-and-forget append, then close immediately. The append should win.
+  const pending = store.append({ type: "session.started", sessionId: "s1" });
+  await store.close();
+  await expect(pending).resolves.toBeUndefined();
+
+  const reader = new JsonlEventStore(path);
+  const out = await reader.readAll();
+  expect(out).toEqual([{ type: "session.started", sessionId: "s1" }]);
+});
+
+test("readAll tolerates a trailing partial line without a warning", async () => {
+  const path = join(dir, "events.jsonl");
+  const event: BridgeEvent = { type: "session.started", sessionId: "s1" };
+  // Complete line, then a partial JSON fragment with no trailing newline.
+  await Bun.write(path, `${JSON.stringify(event)}\n{"type":"agent.progr`);
+
+  const originalWarn = console.warn;
+  let warnCalls = 0;
+  console.warn = () => {
+    warnCalls++;
+  };
+  try {
+    const store = new JsonlEventStore(path);
+    const out = await store.readAll();
+    expect(out).toEqual([event]);
+    expect(warnCalls).toBe(0);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
 test("constructor creates parent directories as needed", async () => {
   const path = join(dir, "nested", "deep", "log.jsonl");
   const store = new JsonlEventStore(path);

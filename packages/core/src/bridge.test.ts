@@ -413,6 +413,30 @@ test("interrupt during close rejects with 'closing'", async () => {
   await closing;
 });
 
+test("startSession with a supervisor that emits then throws leaves no jsonl file", async () => {
+  class PartialEmitFailingSupervisor implements Supervisor {
+    async start(ctx: SupervisorContext): Promise<void> {
+      ctx.emit({ type: "agent.progress", sessionId: ctx.sessionId, content: "before-throw" });
+      throw new Error("partial boom");
+    }
+    async sendMessage(): Promise<void> {}
+    async interrupt(): Promise<void> {}
+    async close(): Promise<void> {}
+  }
+
+  const b = new Bridge({
+    storeDir: dir,
+    supervisorFactory: () => new PartialEmitFailingSupervisor(),
+  });
+  await expect(b.startSession({})).rejects.toThrow("partial boom");
+  // Give microtasks a chance to settle any straggling rejections.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const files = (await readdir(dir).catch(() => [] as string[])).filter((f) =>
+    f.endsWith(".jsonl"),
+  );
+  expect(files).toHaveLength(0);
+});
+
 test("supervisor events with wrong sessionId are dropped and logged", async () => {
   class WrongIdSupervisor implements Supervisor {
     ctx: SupervisorContext | undefined;
