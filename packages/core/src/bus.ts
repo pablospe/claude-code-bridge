@@ -42,8 +42,8 @@ export class EventBus {
 
 class Subscriber implements AsyncIterable<BridgeEvent> {
   readonly #queue: BridgeEvent[] = [];
+  readonly #waiters: Array<(value: IteratorResult<BridgeEvent>) => void> = [];
   readonly #onDispose: () => void;
-  #waiter: ((value: IteratorResult<BridgeEvent>) => void) | undefined;
   #ended = false;
 
   constructor(onDispose: () => void) {
@@ -52,10 +52,9 @@ class Subscriber implements AsyncIterable<BridgeEvent> {
 
   push(event: BridgeEvent): void {
     if (this.#ended) return;
-    if (this.#waiter) {
-      const w = this.#waiter;
-      this.#waiter = undefined;
-      w({ value: event, done: false });
+    const waiter = this.#waiters.shift();
+    if (waiter) {
+      waiter({ value: event, done: false });
       return;
     }
     this.#queue.push(event);
@@ -64,10 +63,9 @@ class Subscriber implements AsyncIterable<BridgeEvent> {
   end(): void {
     if (this.#ended) return;
     this.#ended = true;
-    if (this.#waiter) {
-      const w = this.#waiter;
-      this.#waiter = undefined;
-      w({ value: undefined, done: true });
+    while (this.#waiters.length > 0) {
+      const w = this.#waiters.shift();
+      w?.({ value: undefined, done: true });
     }
   }
 
@@ -82,16 +80,15 @@ class Subscriber implements AsyncIterable<BridgeEvent> {
           return Promise.resolve({ value: undefined, done: true });
         }
         return new Promise((resolve) => {
-          this.#waiter = resolve;
+          this.#waiters.push(resolve);
         });
       },
       return: (): Promise<IteratorResult<BridgeEvent>> => {
         this.#ended = true;
         this.#onDispose();
-        if (this.#waiter) {
-          const w = this.#waiter;
-          this.#waiter = undefined;
-          w({ value: undefined, done: true });
+        while (this.#waiters.length > 0) {
+          const w = this.#waiters.shift();
+          w?.({ value: undefined, done: true });
         }
         return Promise.resolve({ value: undefined, done: true });
       },

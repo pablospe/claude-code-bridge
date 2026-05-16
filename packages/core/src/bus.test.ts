@@ -84,6 +84,26 @@ test("close() ends all subscriber iterations", async () => {
   expect(seenB).toHaveLength(1);
 });
 
+test("two concurrent next() calls resolve in FIFO order on subsequent emits", async () => {
+  const bus = new EventBus();
+  const sub = bus.subscribe();
+  const it = sub[Symbol.asyncIterator]();
+
+  const p1 = it.next();
+  const p2 = it.next();
+
+  bus.emit({ type: "session.started", sessionId: "s1" });
+  bus.emit({ type: "agent.progress", sessionId: "s1", content: "hi" });
+
+  const [r1, r2] = await Promise.all([p1, p2]);
+  expect(r1.done).toBe(false);
+  expect(r2.done).toBe(false);
+  expect((r1.value as BridgeEvent).type).toBe("session.started");
+  expect((r2.value as BridgeEvent).type).toBe("agent.progress");
+
+  bus.close();
+});
+
 test("events emitted before subscribers iterate are buffered per subscriber", async () => {
   const bus = new EventBus();
   const sub = bus.subscribe();
