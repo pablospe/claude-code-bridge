@@ -56,7 +56,16 @@ test("agent.reply carries content and final flag", () => {
 });
 
 test("session.ended makes reason optional", () => {
-  const event: BridgeEvent = { type: "session.started", sessionId: "s1" };
-  if (event.type !== "session.started") throw new Error("type narrowing failed");
-  expect(event.sessionId).toBe("s1");
+  const withoutReason: BridgeEvent = { type: "session.ended", sessionId: "s1" };
+  if (withoutReason.type !== "session.ended") throw new Error("type narrowing failed");
+  expect(withoutReason.sessionId).toBe("s1");
+  expect(withoutReason.reason).toBeUndefined();
+
+  const withReason: BridgeEvent = {
+    type: "session.ended",
+    sessionId: "s1",
+    reason: "client-close",
+  };
+  if (withReason.type !== "session.ended") throw new Error("type narrowing failed");
+  expect(withReason.reason).toBe("client-close");
 });

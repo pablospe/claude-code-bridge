@@ -60,24 +60,11 @@ async function takeEvents(iter: AsyncIterable<BridgeEvent>, count: number): Prom
   return out;
 }
 
-test("startSession emits session.started and returns a SessionHandle", async () => {
-  const events = bridge.events("placeholder");
-  void events; // detached; we'll subscribe by id after start
-
+test("startSession returns a SessionHandle and persists session.started", async () => {
   const handle = await bridge.startSession({});
   expect(typeof handle.id).toBe("string");
   expect(handle.id.length).toBeGreaterThan(0);
 
-  const sub = bridge.events(handle.id);
-  const seen: BridgeEvent[] = [];
-  // session.started was already emitted before subscribe; verify via store
-  // (live subscriptions only see future events).
-  void sub;
-  void seen;
-});
-
-test("session.started is persisted to the JSONL store", async () => {
-  const handle = await bridge.startSession({});
   const stored = await bridge.readStoredEvents(handle.id);
   expect(stored[0]).toEqual({ type: "session.started", sessionId: handle.id });
 });
