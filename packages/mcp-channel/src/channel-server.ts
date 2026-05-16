@@ -17,8 +17,14 @@ export interface CreateChannelServerOptions {
   readonly onTool?: OnToolCallback;
 }
 
+export interface DeliverOptions {
+  readonly messageId?: string;
+  readonly meta?: Readonly<Record<string, unknown>>;
+}
+
 export interface ChannelServerHandle {
   readonly server: Server;
+  deliver(content: string, opts?: DeliverOptions): Promise<void>;
 }
 
 const INSTRUCTIONS =
@@ -90,9 +96,7 @@ function isToolName(name: string): name is ToolName {
 }
 
 export function createChannelServer(options: CreateChannelServerOptions): ChannelServerHandle {
-  // sessionId is captured for future use (deliver in step 3).
-  void options.sessionId;
-  const { onTool } = options;
+  const { sessionId, onTool } = options;
 
   const server = new Server(
     { name: "ccb", version: "0.0.1" },
@@ -132,5 +136,16 @@ export function createChannelServer(options: CreateChannelServerOptions): Channe
     };
   });
 
-  return { server };
+  const deliver = async (content: string, opts?: DeliverOptions): Promise<void> => {
+    const meta: Record<string, unknown> = { ...(opts?.meta ?? {}), session_id: sessionId };
+    if (opts?.messageId !== undefined) {
+      meta.message_id = opts.messageId;
+    }
+    await server.notification({
+      method: "notifications/claude/channel",
+      params: { content, meta },
+    });
+  };
+
+  return { server, deliver };
 }

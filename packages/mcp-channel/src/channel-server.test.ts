@@ -1,7 +1,17 @@
 import { expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { NotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import * as z from "zod/v4";
 import { createChannelServer } from "./channel-server.ts";
+
+const ChannelNotificationSchema = NotificationSchema.extend({
+  method: z.literal("notifications/claude/channel"),
+  params: z.looseObject({
+    content: z.string(),
+    meta: z.record(z.string(), z.unknown()).optional(),
+  }),
+});
 
 test("createChannelServer lists bridge_reply, bridge_progress, bridge_done tools", async () => {
   const { server } = createChannelServer({ sessionId: "s1" });
@@ -101,6 +111,60 @@ test("onTool errors are surfaced as MCP tool errors", async () => {
 
   await client.close();
   await server.close();
+});
+
+test("deliver emits notifications/claude/channel with session_id and message_id meta", async () => {
+  const handle = createChannelServer({ sessionId: "sess-A" });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test-client", version: "0.0.0" });
+
+  const received: Array<{ content: string; meta?: Record<string, unknown> }> = [];
+  client.setNotificationHandler(ChannelNotificationSchema, (n) => {
+    const params = n.params as { content: string; meta?: Record<string, unknown> };
+    received.push({ content: params.content, meta: params.meta });
+  });
+
+  await Promise.all([handle.server.connect(serverTransport), client.connect(clientTransport)]);
+
+  await handle.deliver("hello", { messageId: "m2", meta: { foo: "bar" } });
+
+  // Drain microtasks so the in-memory transport delivers the notification.
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+  expect(received).toHaveLength(1);
+  expect(received[0]?.content).toBe("hello");
+  expect(received[0]?.meta).toMatchObject({
+    session_id: "sess-A",
+    message_id: "m2",
+    foo: "bar",
+  });
+
+  await client.close();
+  await handle.server.close();
+});
+
+test("deliver without messageId still includes session_id in meta", async () => {
+  const handle = createChannelServer({ sessionId: "sess-B" });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test-client", version: "0.0.0" });
+
+  const received: Array<{ content: string; meta?: Record<string, unknown> }> = [];
+  client.setNotificationHandler(ChannelNotificationSchema, (n) => {
+    const params = n.params as { content: string; meta?: Record<string, unknown> };
+    received.push({ content: params.content, meta: params.meta });
+  });
+
+  await Promise.all([handle.server.connect(serverTransport), client.connect(clientTransport)]);
+
+  await handle.deliver("just content");
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+  expect(received).toHaveLength(1);
+  expect(received[0]?.meta).toMatchObject({ session_id: "sess-B" });
+  expect(received[0]?.meta?.message_id).toBeUndefined();
+
+  await client.close();
+  await handle.server.close();
 });
 
 test("createChannelServer advertises claude/channel and tools capabilities", async () => {
