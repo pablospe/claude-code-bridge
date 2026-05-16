@@ -1,5 +1,20 @@
 import { expect, test } from "bun:test";
-import { ControlClient, ControlServer } from "./control.ts";
+import { ControlClient, ControlServer, parseEndpoint } from "./control.ts";
+
+async function until(
+  predicate: () => boolean,
+  opts: { timeout?: number; interval?: number } = {},
+): Promise<void> {
+  const timeout = opts.timeout ?? 1000;
+  const interval = opts.interval ?? 5;
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeout) {
+      throw new Error(`until: predicate did not become true within ${timeout}ms`);
+    }
+    await new Promise<void>((r) => setTimeout(r, interval));
+  }
+}
 
 test("ControlServer.listen on port 0 returns a real endpoint with host and port", async () => {
   const server = new ControlServer();
@@ -92,6 +107,211 @@ test("ControlServer.deliver triggers ControlClient.onDeliver", async () => {
 
   await client.close();
   await server.close();
+});
+
+test("parseEndpoint handles IPv6 bracket form", () => {
+  expect(parseEndpoint("[::1]:8080")).toEqual({ host: "::1", port: 8080 });
+  expect(parseEndpoint("127.0.0.1:5000")).toEqual({ host: "127.0.0.1", port: 5000 });
+});
+
+test("parseEndpoint rejects invalid forms", () => {
+  expect(() => parseEndpoint("badendpoint")).toThrow();
+  expect(() => parseEndpoint("127.0.0.1:")).toThrow();
+  expect(() => parseEndpoint("[::1]:")).toThrow();
+  expect(() => parseEndpoint("[::1]")).toThrow();
+});
+
+test("ControlServer destroys pre-hello sockets after helloTimeoutMs", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0, helloTimeoutMs: 80 });
+
+  const net = await import("node:net");
+  const sock = net.createConnection({ host: info.host, port: info.port });
+  await new Promise<void>((resolve) => sock.once("connect", () => resolve()));
+
+  const closed = new Promise<void>((resolve) => sock.on("close", () => resolve()));
+  await Promise.race([
+    closed,
+    new Promise<void>((_r, reject) =>
+      setTimeout(() => reject(new Error("socket not closed")), 500),
+    ),
+  ]);
+
+  await server.close();
+});
+
+test("ControlServer.close destroys pre-hello sockets immediately", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0, helloTimeoutMs: 10_000 });
+
+  const net = await import("node:net");
+  const sock = net.createConnection({ host: info.host, port: info.port });
+  await new Promise<void>((resolve) => sock.once("connect", () => resolve()));
+
+  const closed = new Promise<void>((resolve) => sock.on("close", () => resolve()));
+  await server.close();
+  await Promise.race([
+    closed,
+    new Promise<void>((_r, reject) =>
+      setTimeout(() => reject(new Error("socket not closed on server.close()")), 500),
+    ),
+  ]);
+});
+
+test("ControlClient.connect resolves only after hello_ack arrives", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  let connected = false;
+  const client = new ControlClient({
+    endpoint: info.endpoint,
+    sessionId: "ack-1",
+    onDeliver: () => {},
+  });
+  const connectPromise = client.connect().then(() => {
+    connected = true;
+  });
+  await connectPromise;
+  expect(connected).toBe(true);
+
+  await client.close();
+  await server.close();
+});
+
+test("ControlClient.connect rejects when server never acks", async () => {
+  // Spin up a bare TCP server that accepts but never speaks.
+  const net = await import("node:net");
+  const bareServer = net.createServer(() => {
+    // do not write anything
+  });
+  await new Promise<void>((resolve) => bareServer.listen(0, "127.0.0.1", () => resolve()));
+  const addr = bareServer.address() as { port: number } | null;
+  if (!addr) throw new Error("no addr");
+
+  const client = new ControlClient({
+    endpoint: `127.0.0.1:${addr.port}`,
+    sessionId: "no-ack",
+    onDeliver: () => {},
+    helloAckTimeoutMs: 80,
+  });
+
+  await expect(client.connect()).rejects.toThrow(/hello_ack/);
+
+  await new Promise<void>((resolve) => bareServer.close(() => resolve()));
+});
+
+test("ControlServer rejects duplicate sessionId hello", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  const helloIds: string[] = [];
+  server.on("hello", (sessionId) => {
+    helloIds.push(sessionId);
+  });
+
+  const clientA = new ControlClient({
+    endpoint: info.endpoint,
+    sessionId: "dup",
+    onDeliver: () => {},
+  });
+  await clientA.connect();
+  expect(helloIds).toEqual(["dup"]);
+
+  // Second connection with same sessionId via raw socket — should be destroyed.
+  const net = await import("node:net");
+  const sock = net.createConnection({ host: info.host, port: info.port });
+  await new Promise<void>((resolve) => sock.once("connect", () => resolve()));
+  const closed = new Promise<void>((resolve) => sock.on("close", () => resolve()));
+  sock.write(`${JSON.stringify({ type: "hello", sessionId: "dup" })}\n`);
+  await Promise.race([
+    closed,
+    new Promise<void>((_r, reject) =>
+      setTimeout(() => reject(new Error("dup socket not destroyed")), 500),
+    ),
+  ]);
+
+  // Original session is still operational.
+  expect(helloIds).toEqual(["dup"]);
+
+  await clientA.close();
+  await server.close();
+});
+
+test("ControlServer destroys socket sending tool before hello", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  const toolCalls: Array<{ name: string }> = [];
+  server.on("tool", (_sid, name) => {
+    toolCalls.push({ name });
+  });
+
+  const net = await import("node:net");
+  const sock = net.createConnection({ host: info.host, port: info.port });
+  await new Promise<void>((resolve) => sock.once("connect", () => resolve()));
+  const closed = new Promise<void>((resolve) => sock.on("close", () => resolve()));
+  sock.write(`${JSON.stringify({ type: "tool", name: "bridge_done", args: {} })}\n`);
+  await Promise.race([
+    closed,
+    new Promise<void>((_r, reject) =>
+      setTimeout(() => reject(new Error("pre-hello tool socket not destroyed")), 500),
+    ),
+  ]);
+  expect(toolCalls).toHaveLength(0);
+
+  await server.close();
+});
+
+test("ControlClient surfaces connection loss via onConnectionLost", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  let lost = 0;
+  const client = new ControlClient({
+    endpoint: info.endpoint,
+    sessionId: "loss-1",
+    onDeliver: () => {},
+    onConnectionLost: () => {
+      lost++;
+    },
+  });
+  await client.connect();
+
+  await server.close();
+  await until(() => lost > 0, { timeout: 1000 });
+
+  await client.close();
+});
+
+test("ControlClient logs onDeliver errors to console.error", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  const originalError = console.error;
+  const messages: unknown[][] = [];
+  console.error = (...args: unknown[]) => {
+    messages.push(args);
+  };
+  try {
+    const client = new ControlClient({
+      endpoint: info.endpoint,
+      sessionId: "err-1",
+      onDeliver: () => {
+        throw new Error("kaboom");
+      },
+    });
+    await client.connect();
+
+    await server.deliver("err-1", "x");
+    await until(() => messages.some((m) => m.some((s) => String(s).includes("kaboom"))), {
+      timeout: 500,
+    });
+
+    await client.close();
+    await server.close();
+  } finally {
+    console.error = originalError;
+  }
 });
 
 test("ControlServer drops malformed control messages without crashing", async () => {

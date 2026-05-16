@@ -44,6 +44,7 @@ type ControlMessage = z.infer<typeof ControlMessageSchema>;
 export interface ControlServerListenOptions {
   readonly host?: string;
   readonly port?: number;
+  readonly helloTimeoutMs?: number;
 }
 
 export interface ControlServerEndpoint {
@@ -58,9 +59,12 @@ export interface DeliverWireOptions {
 }
 
 export interface ControlServerEvents {
-  hello: (sessionId: string, ack: () => void) => void;
-  tool: (sessionId: string, name: string, args: Record<string, unknown>, ack: () => void) => void;
+  hello: (sessionId: string) => void;
+  tool: (sessionId: string, name: string, args: Record<string, unknown>) => void;
 }
+
+const DEFAULT_HELLO_TIMEOUT_MS = 5_000;
+const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 
 /**
  * Loopback TCP control server. Accepts one connection per session.
@@ -69,7 +73,9 @@ export interface ControlServerEvents {
 export class ControlServer {
   readonly #emitter = new EventEmitter();
   readonly #sessionSockets = new Map<string, Socket>();
+  readonly #sockets = new Set<Socket>();
   #server: NetServer | undefined;
+  #helloTimeoutMs: number = DEFAULT_HELLO_TIMEOUT_MS;
 
   on<E extends keyof ControlServerEvents>(event: E, listener: ControlServerEvents[E]): this {
     this.#emitter.on(event, listener);
@@ -84,6 +90,7 @@ export class ControlServer {
   async listen(opts: ControlServerListenOptions = {}): Promise<ControlServerEndpoint> {
     const host = opts.host ?? "127.0.0.1";
     const port = opts.port ?? 0;
+    this.#helloTimeoutMs = opts.helloTimeoutMs ?? DEFAULT_HELLO_TIMEOUT_MS;
     const server = createServer((socket) => this.#handleSocket(socket));
     this.#server = server;
     await new Promise<void>((resolve, reject) => {
@@ -95,19 +102,19 @@ export class ControlServer {
     });
     const address = server.address() as AddressInfo | null;
     if (!address || typeof address === "string") {
-      throw new Error("ControlServer: failed to determine bound address");
+      throw new Error("failed to determine bound address");
     }
     return {
       host: address.address,
       port: address.port,
-      endpoint: `${address.address}:${address.port}`,
+      endpoint: formatEndpoint(address.address, address.port),
     };
   }
 
   async deliver(sessionId: string, content: string, opts: DeliverWireOptions = {}): Promise<void> {
     const socket = this.#sessionSockets.get(sessionId);
     if (!socket) {
-      throw new Error(`ControlServer.deliver: no connected client for session ${sessionId}`);
+      throw new Error(`no connected client for session ${sessionId}`);
     }
     const msg: DeliverMessage = {
       type: "deliver",
@@ -119,7 +126,7 @@ export class ControlServer {
   }
 
   async close(): Promise<void> {
-    for (const socket of this.#sessionSockets.values()) {
+    for (const socket of this.#sockets) {
       try {
         await writeLine(socket, { type: "close" });
       } catch {
@@ -127,6 +134,7 @@ export class ControlServer {
       }
       socket.destroy();
     }
+    this.#sockets.clear();
     this.#sessionSockets.clear();
     const server = this.#server;
     if (!server) return;
@@ -137,26 +145,40 @@ export class ControlServer {
   }
 
   #handleSocket(socket: Socket): void {
+    this.#sockets.add(socket);
     let sessionId: string | undefined;
+    const helloTimer = setTimeout(() => {
+      if (!sessionId) {
+        socket.destroy(new Error("hello timeout"));
+      }
+    }, this.#helloTimeoutMs);
+    helloTimer.unref?.();
     readLines(socket, (msg) => {
       if (msg.type === "hello") {
+        if (sessionId) {
+          // Already greeted on this socket.
+          socket.destroy(new Error("duplicate hello on socket"));
+          return;
+        }
+        if (this.#sessionSockets.has(msg.sessionId)) {
+          socket.destroy(new Error(`duplicate session id: ${msg.sessionId}`));
+          return;
+        }
         sessionId = msg.sessionId;
+        clearTimeout(helloTimer);
         this.#sessionSockets.set(sessionId, socket);
-        const ack = (): void => {
-          writeLine(socket, { type: "hello_ack" }).catch(() => {
-            // best effort
-          });
-        };
-        this.#emitter.emit("hello", sessionId, ack);
-        ack();
+        this.#emitter.emit("hello", sessionId);
+        writeLine(socket, { type: "hello_ack" }).catch(() => {
+          // best effort
+        });
         return;
       }
       if (msg.type === "tool") {
-        if (!sessionId) return;
-        const ack = (): void => {
-          // No application-level ack for tool messages in M1.
-        };
-        this.#emitter.emit("tool", sessionId, msg.name, msg.args, ack);
+        if (!sessionId) {
+          socket.destroy(new Error("tool before hello"));
+          return;
+        }
+        this.#emitter.emit("tool", sessionId, msg.name, msg.args);
         return;
       }
       if (msg.type === "close") {
@@ -166,6 +188,8 @@ export class ControlServer {
       // Ignore unrecognized envelopes.
     });
     socket.on("close", () => {
+      clearTimeout(helloTimer);
+      this.#sockets.delete(socket);
       if (sessionId && this.#sessionSockets.get(sessionId) === socket) {
         this.#sessionSockets.delete(sessionId);
       }
@@ -180,7 +204,11 @@ export interface ControlClientOptions {
   readonly endpoint: string;
   readonly sessionId: string;
   readonly onDeliver: (content: string, opts: DeliverWireOptions) => void | Promise<void>;
+  readonly helloAckTimeoutMs?: number;
+  readonly onConnectionLost?: (err?: Error) => void;
 }
+
+const DEFAULT_HELLO_ACK_TIMEOUT_MS = 5_000;
 
 /**
  * Loopback TCP control client. Connects to a ControlServer endpoint and
@@ -190,12 +218,18 @@ export class ControlClient {
   readonly #endpoint: string;
   readonly #sessionId: string;
   readonly #onDeliver: ControlClientOptions["onDeliver"];
+  readonly #helloAckTimeoutMs: number;
+  readonly #onConnectionLost: ControlClientOptions["onConnectionLost"];
   #socket: Socket | undefined;
+  #connected = false;
+  #closing = false;
 
   constructor(opts: ControlClientOptions) {
     this.#endpoint = opts.endpoint;
     this.#sessionId = opts.sessionId;
     this.#onDeliver = opts.onDeliver;
+    this.#helloAckTimeoutMs = opts.helloAckTimeoutMs ?? DEFAULT_HELLO_ACK_TIMEOUT_MS;
+    this.#onConnectionLost = opts.onConnectionLost;
   }
 
   async connect(): Promise<void> {
@@ -208,7 +242,19 @@ export class ControlClient {
       s.once("error", reject);
     });
     this.#socket = socket;
+
+    let ackResolve!: () => void;
+    let ackReject!: (err: Error) => void;
+    const ackPromise = new Promise<void>((resolve, reject) => {
+      ackResolve = resolve;
+      ackReject = reject;
+    });
+
     readLines(socket, async (msg) => {
+      if (msg.type === "hello_ack") {
+        ackResolve();
+        return;
+      }
       if (msg.type === "deliver") {
         const opts: DeliverWireOptions = {
           ...(msg.messageId !== undefined ? { messageId: msg.messageId } : {}),
@@ -216,8 +262,8 @@ export class ControlClient {
         };
         try {
           await this.#onDeliver(msg.content, opts);
-        } catch {
-          // Errors in delivery callbacks are swallowed in M1.
+        } catch (err) {
+          console.error(`control: onDeliver threw: ${String(err)}`);
         }
         return;
       }
@@ -225,18 +271,38 @@ export class ControlClient {
         socket.end();
         return;
       }
-      // hello_ack and others are accepted but not surfaced in M1.
     });
-    socket.on("error", () => {
-      // Suppress; the consumer can rely on close() / connection errors via connect().
+
+    socket.on("error", (err) => {
+      if (this.#connected && !this.#closing) {
+        this.#onConnectionLost?.(err);
+      }
     });
+    socket.on("close", () => {
+      if (this.#connected && !this.#closing) {
+        this.#onConnectionLost?.();
+      }
+    });
+
     await writeLine(socket, { type: "hello", sessionId: this.#sessionId });
+
+    const ackTimer = setTimeout(() => {
+      socket.destroy();
+      ackReject(new Error("hello_ack timeout"));
+    }, this.#helloAckTimeoutMs);
+    ackTimer.unref?.();
+    try {
+      await ackPromise;
+    } finally {
+      clearTimeout(ackTimer);
+    }
+    this.#connected = true;
   }
 
   async sendTool(name: string, args: Record<string, unknown>): Promise<void> {
     const socket = this.#socket;
     if (!socket) {
-      throw new Error("ControlClient.sendTool: not connected");
+      throw new Error("not connected");
     }
     await writeLine(socket, { type: "tool", name, args });
   }
@@ -244,6 +310,7 @@ export class ControlClient {
   async close(): Promise<void> {
     const socket = this.#socket;
     if (!socket) return;
+    this.#closing = true;
     this.#socket = undefined;
     try {
       await writeLine(socket, { type: "close" });
@@ -256,17 +323,36 @@ export class ControlClient {
   }
 }
 
-function parseEndpoint(endpoint: string): { host: string; port: number } {
-  const idx = endpoint.lastIndexOf(":");
-  if (idx <= 0 || idx === endpoint.length - 1) {
-    throw new Error(`ControlClient: invalid endpoint ${endpoint}`);
+export function parseEndpoint(endpoint: string): { host: string; port: number } {
+  let host: string;
+  let portStr: string;
+  if (endpoint.startsWith("[")) {
+    const closeIdx = endpoint.indexOf("]");
+    if (closeIdx < 0 || endpoint[closeIdx + 1] !== ":") {
+      throw new Error(`invalid endpoint ${endpoint}`);
+    }
+    host = endpoint.slice(1, closeIdx);
+    portStr = endpoint.slice(closeIdx + 2);
+  } else {
+    const idx = endpoint.lastIndexOf(":");
+    if (idx <= 0 || idx === endpoint.length - 1) {
+      throw new Error(`invalid endpoint ${endpoint}`);
+    }
+    host = endpoint.slice(0, idx);
+    portStr = endpoint.slice(idx + 1);
   }
-  const host = endpoint.slice(0, idx);
-  const port = Number(endpoint.slice(idx + 1));
+  if (portStr.length === 0) {
+    throw new Error(`invalid endpoint ${endpoint}`);
+  }
+  const port = Number(portStr);
   if (!Number.isInteger(port) || port <= 0) {
-    throw new Error(`ControlClient: invalid endpoint ${endpoint}`);
+    throw new Error(`invalid endpoint ${endpoint}`);
   }
   return { host, port };
+}
+
+function formatEndpoint(host: string, port: number): string {
+  return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
 }
 
 function writeLine(socket: Socket, msg: ControlMessage): Promise<void> {
@@ -287,6 +373,11 @@ function readLines(socket: Socket, onMessage: (msg: ControlMessage) => void | Pr
   socket.setEncoding("utf8");
   socket.on("data", (chunk: string) => {
     buffer += chunk;
+    if (buffer.length > MAX_FRAME_BYTES) {
+      socket.destroy(new Error("control: frame exceeds max size"));
+      buffer = "";
+      return;
+    }
     let newlineIndex = buffer.indexOf("\n");
     while (newlineIndex >= 0) {
       const line = buffer.slice(0, newlineIndex);
