@@ -1,12 +1,23 @@
 #!/usr/bin/env bun
 import { mockSupervisorFactory } from "@ccb/claude-code";
-import type { SupervisorFactory } from "@ccb/core";
 import { Command, InvalidArgumentError } from "commander";
 import { type DemoFormat, runDemo } from "./demo.ts";
 import { formatJson, formatPretty } from "./format.ts";
 import { isValidEndpoint, runMcpConfig } from "./mcp-config.ts";
 
 const VERSION = "0.0.1";
+
+interface DemoCommandOptions {
+  readonly format: DemoFormat;
+  readonly storeDir: string;
+  readonly timeoutMs: number;
+}
+
+interface McpConfigCommandOptions {
+  readonly sessionId?: string;
+  readonly endpoint: string;
+  readonly out?: string;
+}
 
 function parsePositiveInt(value: string): number {
   const n = Number(value);
@@ -21,21 +32,11 @@ function parseFormat(value: string): DemoFormat {
   throw new InvalidArgumentError("must be one of: json, pretty, stream");
 }
 
-function parseSupervisor(value: string): "mock" {
-  if (value === "mock") return value;
-  throw new InvalidArgumentError("only 'mock' is supported");
-}
-
 function parseEndpointOption(value: string): string {
   if (!isValidEndpoint(value)) {
     throw new InvalidArgumentError("invalid endpoint format: expected host:port");
   }
   return value;
-}
-
-function supervisorFor(kind: "mock"): SupervisorFactory {
-  if (kind === "mock") return mockSupervisorFactory();
-  throw new Error(`unknown supervisor: ${kind}`);
 }
 
 export function buildProgram(): Command {
@@ -47,19 +48,13 @@ export function buildProgram(): Command {
 
   program
     .command("demo")
-    .description("run an end-to-end demo turn using the MockSupervisor by default")
+    .description("run an end-to-end demo turn using the MockSupervisor")
     .argument("<input>", "message to send to the agent")
     .option(
       "--format <json|pretty|stream>",
       "output format: json (one event per line), pretty (human-readable), stream (live json)",
       parseFormat,
       "pretty" as DemoFormat,
-    )
-    .option(
-      "--supervisor <mock>",
-      "supervisor backend (only 'mock' is wired)",
-      parseSupervisor,
-      "mock",
     )
     .option("--store-dir <path>", "directory for per-session JSONL logs", ".ccb-data")
     .option(
@@ -69,11 +64,10 @@ export function buildProgram(): Command {
       10_000,
     )
     .action(async (input: string, opts: DemoCommandOptions) => {
-      const factory = supervisorFor(opts.supervisor);
       const isStream = opts.format === "stream";
       const result = await runDemo({
         input,
-        supervisorFactory: factory,
+        supervisorFactory: mockSupervisorFactory(),
         format: opts.format,
         storeDir: opts.storeDir,
         timeoutMs: opts.timeoutMs,
@@ -87,6 +81,7 @@ export function buildProgram(): Command {
       }
     });
 
+  // TODO(real-claude smoke): add `ccb serve --endpoint <host:port> --session-id <id>` using ControlServer from @ccb/mcp-channel; print events as JSON on stdout, "listening on host:port" on stderr, and drive bridge.close on SIGINT/SIGTERM.
   program
     .command("mcp-config")
     .description("emit the .mcp.json shape Claude Code expects via --mcp-config")
@@ -108,19 +103,6 @@ export function buildProgram(): Command {
     });
 
   return program;
-}
-
-interface DemoCommandOptions {
-  readonly format: DemoFormat;
-  readonly supervisor: "mock";
-  readonly storeDir: string;
-  readonly timeoutMs: number;
-}
-
-interface McpConfigCommandOptions {
-  readonly sessionId?: string;
-  readonly endpoint: string;
-  readonly out?: string;
 }
 
 async function main(): Promise<void> {

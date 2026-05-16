@@ -71,7 +71,7 @@ test("formatPretty produces the expected human-readable shapes", () => {
   expect(formatPretty({ type: "tool.event", sessionId: "s1", payload: { foo: 1 } })).toBe(
     '[tool.event] {"foo":1}',
   );
-  expect(formatPretty({ type: "session.ended", sessionId: "s1" })).toBe("[session.ended] reason=");
+  expect(formatPretty({ type: "session.ended", sessionId: "s1" })).toBe("[session.ended]");
   expect(formatPretty({ type: "session.ended", sessionId: "s1", reason: "closed" })).toBe(
     "[session.ended] reason=closed",
   );

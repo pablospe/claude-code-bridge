@@ -6,9 +6,5 @@
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
   "include": ["src"],
-  "references": [
-    { "path": "../../packages/core" },
-    { "path": "../../packages/mcp-channel" },
-    { "path": "../../packages/claude-code" }
-  ]
+  "references": [{ "path": "../../packages/core" }, { "path": "../../packages/claude-code" }]
 }

@@ -52,9 +52,9 @@ test("ccb demo --help lists supported flags", async () => {
   const { exitCode, stdout } = await runCli(["demo", "--help"]);
   expect(exitCode).toBe(0);
   expect(stdout).toMatch(/--format/);
-  expect(stdout).toMatch(/--supervisor/);
   expect(stdout).toMatch(/--store-dir/);
   expect(stdout).toMatch(/--timeout-ms/);
+  expect(stdout).not.toMatch(/--supervisor/);
 });
 
 test("ccb mcp-config --help lists session-id, endpoint, out flags", async () => {

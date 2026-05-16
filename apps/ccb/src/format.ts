@@ -19,7 +19,9 @@ export const formatPretty: Formatter = (event) => {
     case "tool.event":
       return `[tool.event] ${JSON.stringify(event.payload)}`;
     case "session.ended":
-      return `[session.ended] reason=${event.reason ?? ""}`;
+      return event.reason !== undefined
+        ? `[session.ended] reason=${event.reason}`
+        : "[session.ended]";
     default: {
       const _exhaustive: never = event;
       throw new Error(`unknown event: ${String(_exhaustive)}`);
