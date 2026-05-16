@@ -1,0 +1,131 @@
+#!/usr/bin/env bun
+import { mockSupervisorFactory } from "@ccb/claude-code";
+import type { SupervisorFactory } from "@ccb/core";
+import { Command, InvalidArgumentError } from "commander";
+import { type DemoFormat, runDemo } from "./demo.ts";
+import { formatJson, formatPretty } from "./format.ts";
+import { runMcpConfig } from "./mcp-config.ts";
+
+const VERSION = "0.0.1";
+
+function parsePositiveInt(value: string): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+    throw new InvalidArgumentError("must be a positive integer");
+  }
+  return n;
+}
+
+function parseFormat(value: string): DemoFormat {
+  if (value === "json" || value === "pretty" || value === "stream") return value;
+  throw new InvalidArgumentError("must be one of: json, pretty, stream");
+}
+
+function parseSupervisor(value: string): "mock" {
+  if (value === "mock") return value;
+  throw new InvalidArgumentError("only 'mock' is supported");
+}
+
+function supervisorFor(kind: "mock"): SupervisorFactory {
+  if (kind === "mock") return mockSupervisorFactory();
+  throw new Error(`unknown supervisor: ${kind}`);
+}
+
+export function buildProgram(): Command {
+  const program = new Command();
+  program
+    .name("ccb")
+    .description("Claude Code Bridge developer CLI")
+    .version(VERSION, "-V, --version", "print the CLI version");
+
+  program
+    .command("demo")
+    .description("run an end-to-end demo turn using the MockSupervisor by default")
+    .argument("<input>", "message to send to the agent")
+    .option(
+      "--format <json|pretty|stream>",
+      "output format: json (one event per line), pretty (human-readable), stream (live json)",
+      parseFormat,
+      "pretty" as DemoFormat,
+    )
+    .option(
+      "--supervisor <mock>",
+      "supervisor backend (only 'mock' is wired)",
+      parseSupervisor,
+      "mock",
+    )
+    .option("--store-dir <path>", "directory for per-session JSONL logs", ".ccb-data")
+    .option(
+      "--timeout-ms <ms>",
+      "abort the demo if it does not complete within this many milliseconds",
+      parsePositiveInt,
+      10_000,
+    )
+    .action(async (input: string, opts: DemoCommandOptions) => {
+      const factory = supervisorFor(opts.supervisor);
+      const isStream = opts.format === "stream";
+      const result = await runDemo({
+        input,
+        supervisorFactory: factory,
+        format: opts.format,
+        storeDir: opts.storeDir,
+        timeoutMs: opts.timeoutMs,
+        onEvent: isStream ? (_ev, line) => process.stdout.write(`${line}\n`) : undefined,
+      });
+      if (!isStream) {
+        const formatter = opts.format === "pretty" ? formatPretty : formatJson;
+        for (const ev of result.events) {
+          process.stdout.write(`${formatter(ev)}\n`);
+        }
+      }
+    });
+
+  program
+    .command("mcp-config")
+    .description("emit the .mcp.json shape Claude Code expects via --mcp-config")
+    .option("--session-id <id>", "session id to embed in the config", () => crypto.randomUUID())
+    .option("--endpoint <host:port>", "bridge control endpoint the channel server connects to")
+    .option("--out <path>", "write the JSON to this path instead of stdout")
+    .action(async (opts: McpConfigCommandOptions) => {
+      const endpoint = opts.endpoint;
+      if (!endpoint) {
+        program.error("error: required option '--endpoint <host:port>' not specified");
+        return;
+      }
+      const sessionId = opts.sessionId ?? crypto.randomUUID();
+      const output = await runMcpConfig({
+        sessionId,
+        endpoint,
+        out: opts.out,
+      });
+      process.stdout.write(`${output}\n`);
+    });
+
+  return program;
+}
+
+interface DemoCommandOptions {
+  readonly format: DemoFormat;
+  readonly supervisor: "mock";
+  readonly storeDir: string;
+  readonly timeoutMs: number;
+}
+
+interface McpConfigCommandOptions {
+  readonly sessionId?: string;
+  readonly endpoint?: string;
+  readonly out?: string;
+}
+
+async function main(): Promise<void> {
+  const program = buildProgram();
+  await program.parseAsync(process.argv);
+}
+
+if (import.meta.main) {
+  main().catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`ccb: ${message}\n`);
+    process.exit(1);
+  });
+}

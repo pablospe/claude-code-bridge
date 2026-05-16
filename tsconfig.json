@@ -3,6 +3,7 @@
   "references": [
     { "path": "packages/core" },
     { "path": "packages/mcp-channel" },
-    { "path": "packages/claude-code" }
+    { "path": "packages/claude-code" },
+    { "path": "apps/ccb" }
   ]
 }
