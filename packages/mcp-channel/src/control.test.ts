@@ -552,6 +552,178 @@ test("ControlClient.connect rejects without leaving #socket set; sendTool throws
   await new Promise<void>((resolve) => bareServer.close(() => resolve()));
 });
 
+test("hello_ack reaches client before deliver triggered from hello listener", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  // Server immediately delivers a message from the hello listener (synchronous
+  // call to server.deliver). The hello_ack write must reach the wire before
+  // the deliver frame so the client never sees deliver before hello_ack.
+  server.on("hello", (sessionId) => {
+    void server.deliver(sessionId, "from-hello", { messageId: "m-hello" });
+  });
+
+  // Connect via raw socket so we can observe the exact line ordering.
+  const net = await import("node:net");
+  const sock = net.createConnection({ host: info.host, port: info.port });
+  await new Promise<void>((resolve) => sock.once("connect", () => resolve()));
+
+  sock.setEncoding("utf8");
+  const lines: string[] = [];
+  let buf = "";
+  sock.on("data", (chunk: string) => {
+    buf += chunk;
+    let i = buf.indexOf("\n");
+    while (i >= 0) {
+      lines.push(buf.slice(0, i));
+      buf = buf.slice(i + 1);
+      i = buf.indexOf("\n");
+    }
+  });
+
+  sock.write(`${JSON.stringify({ type: "hello", sessionId: "order-1" })}\n`);
+  await until(() => lines.length >= 2, { timeout: 1000 });
+
+  // The first received line must be hello_ack, then deliver.
+  expect(lines[0]).toContain("hello_ack");
+  expect(lines[1]).toContain("deliver");
+
+  sock.destroy();
+  await server.close();
+});
+
+test("ControlServer survives a throwing tool listener and keeps dispatching", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  const originalError = console.error;
+  const errors: string[] = [];
+  console.error = (...args: unknown[]) => {
+    errors.push(args.map((a) => String(a)).join(" "));
+  };
+
+  try {
+    let calls = 0;
+    server.on("tool", () => {
+      calls++;
+      if (calls === 1) throw new Error("listener boom");
+    });
+
+    const client = new ControlClient({
+      endpoint: info.endpoint,
+      sessionId: "throw-1",
+      onDeliver: () => {},
+    });
+    await client.connect();
+
+    await client.sendTool("bridge_done", { reason: "first" });
+    await client.sendTool("bridge_done", { reason: "second" });
+    await until(() => calls >= 2, { timeout: 1000 });
+
+    expect(calls).toBe(2);
+    expect(errors.some((m) => m.includes("listener boom"))).toBe(true);
+
+    await client.close();
+    await server.close();
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test("ControlServer.deliver validates meta keys and rejects reserved keys", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  const client = new ControlClient({
+    endpoint: info.endpoint,
+    sessionId: "meta-1",
+    onDeliver: () => {},
+  });
+  await client.connect();
+
+  await expect(
+    server.deliver("meta-1", "x", { meta: { "request-id": "x" } as Record<string, string> }),
+  ).rejects.toThrow(/invalid meta key/);
+  await expect(server.deliver("meta-1", "x", { meta: { session_id: "x" } })).rejects.toThrow(
+    /reserved/,
+  );
+  await expect(server.deliver("meta-1", "x", { meta: { message_id: "x" } })).rejects.toThrow(
+    /reserved/,
+  );
+  await expect(
+    server.deliver("meta-1", "x", { meta: { request_id: 123 as unknown as string } }),
+  ).rejects.toThrow(/meta value must be string/);
+
+  // Valid identifier and non-reserved keys still work.
+  await server.deliver("meta-1", "ok", { meta: { request_id: "x" } });
+
+  await client.close();
+  await server.close();
+});
+
+test("ControlServer drops oversized single-line frames", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  const net = await import("node:net");
+  const sock = net.createConnection({ host: info.host, port: info.port });
+  await new Promise<void>((resolve) => sock.once("connect", () => resolve()));
+  const closed = new Promise<void>((resolve) => sock.on("close", () => resolve()));
+  // Single line larger than MAX_FRAME_BYTES (16 MiB) with no newline.
+  // We rely on the buffer-size check rejecting it.
+  const big = "a".repeat(17 * 1024 * 1024);
+  sock.on("error", () => {});
+  sock.write(big);
+
+  await Promise.race([
+    closed,
+    new Promise<void>((_r, reject) =>
+      setTimeout(() => reject(new Error("oversized single-line socket not destroyed")), 2000),
+    ),
+  ]);
+
+  await server.close();
+});
+
+test("ControlServer keeps socket alive when individual lines are within cap (multi-line buffer)", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  const helloIds: string[] = [];
+  server.on("hello", (sessionId) => {
+    helloIds.push(sessionId);
+  });
+  const toolCalls: Array<{ name: string }> = [];
+  server.on("tool", (_sid, name) => {
+    toolCalls.push({ name });
+  });
+
+  const net = await import("node:net");
+  const sock = net.createConnection({ host: info.host, port: info.port });
+  await new Promise<void>((resolve) => sock.once("connect", () => resolve()));
+  sock.on("error", () => {});
+
+  // Two lines, each ~8 MB but well under the 16 MiB single-frame cap.
+  // Combined the chunk could grow over 16 MiB depending on how Node delivers
+  // it; the per-line check must allow this through.
+  const helloLine = `${JSON.stringify({ type: "hello", sessionId: "multi-1" })}\n`;
+  const padding = "x".repeat(8 * 1024 * 1024);
+  const toolLine = `${JSON.stringify({ type: "tool", name: "bridge_done", args: { p: padding } })}\n`;
+
+  sock.write(helloLine);
+  sock.write(toolLine);
+  sock.write(toolLine);
+
+  await until(() => toolCalls.length >= 2, { timeout: 10_000 });
+  expect(helloIds).toEqual(["multi-1"]);
+  expect(toolCalls.length).toBe(2);
+  // Socket should still be alive (not destroyed).
+  expect(sock.destroyed).toBe(false);
+
+  sock.destroy();
+  await server.close();
+});
+
 test("ControlServer buffers partial JSON lines until newline", async () => {
   const server = new ControlServer();
   const info = await server.listen({ host: "127.0.0.1", port: 0 });

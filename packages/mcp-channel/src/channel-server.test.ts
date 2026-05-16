@@ -230,6 +230,16 @@ test("deliver rejects meta keys that are not valid identifiers", async () => {
   ).rejects.toThrow(/invalid meta key/);
 });
 
+test("deliver rejects reserved meta keys session_id and message_id", async () => {
+  const handle = createChannelServer({ sessionId: "sess-R" });
+  await expect(handle.deliver("hello", { meta: { session_id: "x" } })).rejects.toThrow(
+    /meta key is reserved: session_id/,
+  );
+  await expect(handle.deliver("hello", { meta: { message_id: "x" } })).rejects.toThrow(
+    /meta key is reserved: message_id/,
+  );
+});
+
 test("deliver rejects non-string meta values", async () => {
   const handle = createChannelServer({ sessionId: "sess-X" });
   await expect(

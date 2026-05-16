@@ -9,6 +9,7 @@ import * as z from "zod/v4";
 export type ToolName = "bridge_reply" | "bridge_progress" | "bridge_done";
 
 const META_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const RESERVED_META_KEYS = new Set(["session_id", "message_id"]);
 
 const BridgeReplyArgsSchema = z.object({
   content: z.string(),
@@ -174,6 +175,9 @@ export function createChannelServer(options: CreateChannelServerOptions): Channe
       for (const [key, value] of Object.entries(opts.meta)) {
         if (!META_KEY_PATTERN.test(key)) {
           throw new Error(`invalid meta key: ${key}`);
+        }
+        if (RESERVED_META_KEYS.has(key)) {
+          throw new Error(`meta key is reserved: ${key}`);
         }
         if (typeof value !== "string") {
           throw new Error(`meta value must be string: ${key}`);

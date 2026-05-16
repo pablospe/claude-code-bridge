@@ -66,6 +66,25 @@ export interface ControlServerEvents {
 const DEFAULT_HELLO_TIMEOUT_MS = 5_000;
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const SHUTDOWN_TIMEOUT_MS = 1_000;
+const META_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const RESERVED_META_KEYS = new Set(["session_id", "message_id"]);
+
+function validateWireMeta(meta: Readonly<Record<string, unknown>>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(meta)) {
+    if (!META_KEY_PATTERN.test(key)) {
+      throw new Error(`invalid meta key: ${key}`);
+    }
+    if (RESERVED_META_KEYS.has(key)) {
+      throw new Error(`meta key is reserved: ${key}`);
+    }
+    if (typeof value !== "string") {
+      throw new Error(`meta value must be string: ${key}`);
+    }
+    out[key] = value;
+  }
+  return out;
+}
 
 /**
  * Loopback TCP control server. Accepts one connection per session.
@@ -117,11 +136,12 @@ export class ControlServer {
     if (!socket) {
       throw new Error(`no connected client for session ${sessionId}`);
     }
+    const meta = opts.meta !== undefined ? validateWireMeta(opts.meta) : undefined;
     const msg: DeliverMessage = {
       type: "deliver",
       content,
       ...(opts.messageId !== undefined ? { messageId: opts.messageId } : {}),
-      ...(opts.meta !== undefined ? { meta: opts.meta } : {}),
+      ...(meta !== undefined ? { meta } : {}),
     };
     await writeLine(socket, msg);
   }
@@ -157,7 +177,7 @@ export class ControlServer {
       }
     }, this.#helloTimeoutMs);
     helloTimer.unref?.();
-    readLines(socket, (msg) => {
+    readLines(socket, async (msg) => {
       if (msg.type === "hello") {
         if (sessionId) {
           // Already greeted on this socket.
@@ -171,10 +191,19 @@ export class ControlServer {
         sessionId = msg.sessionId;
         clearTimeout(helloTimer);
         this.#sessionSockets.set(sessionId, socket);
-        this.#emitter.emit("hello", sessionId);
-        writeLine(socket, { type: "hello_ack" }).catch(() => {
+        // Write hello_ack BEFORE emitting the hello event so any synchronous
+        // deliver() call from a listener cannot race ahead of the ack on the
+        // wire.
+        try {
+          await writeLine(socket, { type: "hello_ack" });
+        } catch {
           // best effort
-        });
+        }
+        try {
+          this.#emitter.emit("hello", sessionId);
+        } catch (err) {
+          console.error(`control: hello listener threw: ${String(err)}`);
+        }
         return;
       }
       if (msg.type === "tool") {
@@ -182,7 +211,11 @@ export class ControlServer {
           socket.destroy(new Error("tool before hello"));
           return;
         }
-        this.#emitter.emit("tool", sessionId, msg.name, msg.args);
+        try {
+          this.#emitter.emit("tool", sessionId, msg.name, msg.args);
+        } catch (err) {
+          console.error(`control: tool listener threw: ${String(err)}`);
+        }
         return;
       }
       if (msg.type === "close") {
@@ -458,22 +491,24 @@ function endSocketWithTimeout(socket: Socket, timeoutMs: number): Promise<void> 
 
 /**
  * Read newline-delimited JSON messages from a socket. The remainder between
- * data chunks is buffered until a newline arrives.
+ * data chunks is buffered until a newline arrives. Each completed line is
+ * size-checked individually against MAX_FRAME_BYTES; the residual partial
+ * line is also checked to prevent unbounded growth.
  */
 function readLines(socket: Socket, onMessage: (msg: ControlMessage) => void | Promise<void>): void {
   let buffer = "";
   socket.setEncoding("utf8");
   socket.on("data", (chunk: string) => {
     buffer += chunk;
-    if (buffer.length > MAX_FRAME_BYTES) {
-      socket.destroy(new Error("control: frame exceeds max size"));
-      buffer = "";
-      return;
-    }
     let newlineIndex = buffer.indexOf("\n");
     while (newlineIndex >= 0) {
       const line = buffer.slice(0, newlineIndex);
       buffer = buffer.slice(newlineIndex + 1);
+      if (line.length > MAX_FRAME_BYTES) {
+        socket.destroy(new Error("control: frame exceeds max size"));
+        buffer = "";
+        return;
+      }
       if (line.length > 0) {
         let value: unknown;
         try {
@@ -491,6 +526,10 @@ function readLines(socket: Socket, onMessage: (msg: ControlMessage) => void | Pr
         }
       }
       newlineIndex = buffer.indexOf("\n");
+    }
+    if (buffer.length > MAX_FRAME_BYTES) {
+      socket.destroy(new Error("control: frame exceeds max size"));
+      buffer = "";
     }
   });
 }
