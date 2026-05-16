@@ -65,6 +65,7 @@ export interface ControlServerEvents {
 
 const DEFAULT_HELLO_TIMEOUT_MS = 5_000;
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+const SHUTDOWN_TIMEOUT_MS = 1_000;
 
 /**
  * Loopback TCP control server. Accepts one connection per session.
@@ -126,14 +127,17 @@ export class ControlServer {
   }
 
   async close(): Promise<void> {
-    for (const socket of this.#sockets) {
-      try {
-        await writeLine(socket, { type: "close" });
-      } catch {
-        // best effort
-      }
-      socket.destroy();
-    }
+    const sockets = [...this.#sockets];
+    await Promise.allSettled(
+      sockets.map(async (socket) => {
+        try {
+          await writeLineWithTimeout(socket, { type: "close" }, SHUTDOWN_TIMEOUT_MS);
+        } catch {
+          // best effort
+        }
+        socket.destroy();
+      }),
+    );
     this.#sockets.clear();
     this.#sessionSockets.clear();
     const server = this.#server;
@@ -223,6 +227,7 @@ export class ControlClient {
   #socket: Socket | undefined;
   #connected = false;
   #closing = false;
+  #lostEmitted = false;
 
   constructor(opts: ControlClientOptions) {
     this.#endpoint = opts.endpoint;
@@ -245,6 +250,7 @@ export class ControlClient {
 
     let ackResolve!: () => void;
     let ackReject!: (err: Error) => void;
+    let ackTimer: ReturnType<typeof setTimeout> | undefined;
     const ackPromise = new Promise<void>((resolve, reject) => {
       ackResolve = resolve;
       ackReject = reject;
@@ -274,29 +280,55 @@ export class ControlClient {
     });
 
     socket.on("error", (err) => {
-      if (this.#connected && !this.#closing) {
+      if (!this.#connected) {
+        if (ackTimer) clearTimeout(ackTimer);
+        ackReject(err ?? new Error("connection closed before hello_ack"));
+        this.#socket = undefined;
+        return;
+      }
+      if (!this.#lostEmitted && !this.#closing) {
+        this.#lostEmitted = true;
+        this.#socket = undefined;
         this.#onConnectionLost?.(err);
       }
     });
     socket.on("close", () => {
-      if (this.#connected && !this.#closing) {
+      if (!this.#connected) {
+        if (ackTimer) clearTimeout(ackTimer);
+        ackReject(new Error("connection closed before hello_ack"));
+        this.#socket = undefined;
+        return;
+      }
+      if (!this.#lostEmitted && !this.#closing) {
+        this.#lostEmitted = true;
+        this.#socket = undefined;
         this.#onConnectionLost?.();
       }
     });
 
-    await writeLine(socket, { type: "hello", sessionId: this.#sessionId });
-
-    const ackTimer = setTimeout(() => {
-      socket.destroy();
-      ackReject(new Error("hello_ack timeout"));
-    }, this.#helloAckTimeoutMs);
-    ackTimer.unref?.();
     try {
-      await ackPromise;
-    } finally {
-      clearTimeout(ackTimer);
+      await writeLine(socket, { type: "hello", sessionId: this.#sessionId });
+
+      ackTimer = setTimeout(() => {
+        socket.destroy();
+        ackReject(new Error("hello_ack timeout"));
+      }, this.#helloAckTimeoutMs);
+      ackTimer.unref?.();
+      try {
+        await ackPromise;
+      } finally {
+        if (ackTimer) clearTimeout(ackTimer);
+      }
+      this.#connected = true;
+    } catch (err) {
+      this.#socket = undefined;
+      try {
+        socket.destroy();
+      } catch {
+        // ignore
+      }
+      throw err;
     }
-    this.#connected = true;
   }
 
   async sendTool(name: string, args: Record<string, unknown>): Promise<void> {
@@ -309,17 +341,15 @@ export class ControlClient {
 
   async close(): Promise<void> {
     const socket = this.#socket;
-    if (!socket) return;
     this.#closing = true;
     this.#socket = undefined;
+    if (!socket || socket.destroyed) return;
     try {
-      await writeLine(socket, { type: "close" });
+      await writeLineWithTimeout(socket, { type: "close" }, SHUTDOWN_TIMEOUT_MS);
     } catch {
       // best effort
     }
-    await new Promise<void>((resolve) => {
-      socket.end(() => resolve());
-    });
+    await endSocketWithTimeout(socket, SHUTDOWN_TIMEOUT_MS);
   }
 }
 
@@ -361,6 +391,68 @@ function writeLine(socket: Socket, msg: ControlMessage): Promise<void> {
       if (err) reject(err);
       else resolve();
     });
+  });
+}
+
+/**
+ * Bounded writeLine: rejects after timeoutMs if the underlying write callback
+ * never fires. Used during shutdown paths to avoid hanging on wedged peers.
+ */
+function writeLineWithTimeout(
+  socket: Socket,
+  msg: ControlMessage,
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("control: writeLine timeout"));
+    }, timeoutMs);
+    timer.unref?.();
+    socket.write(`${JSON.stringify(msg)}\n`, (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+/**
+ * Bounded socket.end: resolves after the local FIN callback fires or after
+ * timeoutMs (whichever first). On timeout, destroys the socket.
+ */
+function endSocketWithTimeout(socket: Socket, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    if (socket.destroyed) {
+      resolve();
+      return;
+    }
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve();
+    }, timeoutMs);
+    timer.unref?.();
+    try {
+      socket.end(() => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      });
+    } catch {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      }
+    }
   });
 }
 

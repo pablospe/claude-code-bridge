@@ -349,6 +349,209 @@ test("ControlServer drops malformed control messages without crashing", async ()
   await server.close();
 });
 
+test("ControlClient.connect rejects fast when server destroys socket before hello_ack", async () => {
+  // Simulate a server that accepts hello and immediately destroys the socket
+  // (e.g., duplicate session or hello timeout server-side).
+  const net = await import("node:net");
+  const bareServer = net.createServer((socket) => {
+    socket.on("data", () => {
+      // After receiving any data (the hello), destroy the socket.
+      socket.destroy();
+    });
+  });
+  await new Promise<void>((resolve) => bareServer.listen(0, "127.0.0.1", () => resolve()));
+  const addr = bareServer.address() as { port: number } | null;
+  if (!addr) throw new Error("no addr");
+
+  const client = new ControlClient({
+    endpoint: `127.0.0.1:${addr.port}`,
+    sessionId: "fast-fail",
+    onDeliver: () => {},
+    helloAckTimeoutMs: 5_000,
+  });
+
+  const start = Date.now();
+  await expect(client.connect()).rejects.toThrow(/closed before hello_ack/);
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(500);
+
+  await new Promise<void>((resolve) => bareServer.close(() => resolve()));
+});
+
+test("ControlServer.close completes within ~1500ms even with stalled client", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  // Use a raw socket so we can pause it (stop draining), forcing the server's
+  // writes to hang. Complete the hello handshake first to register the session.
+  const net = await import("node:net");
+  const sock = net.createConnection({ host: info.host, port: info.port });
+  await new Promise<void>((resolve) => sock.once("connect", () => resolve()));
+  sock.write(`${JSON.stringify({ type: "hello", sessionId: "stall-srv" })}\n`);
+  // Wait for the hello_ack to arrive so we know server registered the session.
+  await new Promise<void>((resolve) => {
+    sock.setEncoding("utf8");
+    let buf = "";
+    sock.on("data", (chunk: string) => {
+      buf += chunk;
+      if (buf.includes("hello_ack")) resolve();
+    });
+  });
+  // Now pause the socket so server's subsequent writes will not drain.
+  sock.pause();
+
+  const start = Date.now();
+  await server.close();
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(1_500);
+
+  sock.destroy();
+});
+
+test("ControlClient.close completes within ~1500ms even when server is stalled", async () => {
+  // Build a bare TCP server that completes the hello/ack handshake but then
+  // pauses the server-side socket so any subsequent writes from the client
+  // are not drained.
+  const net = await import("node:net");
+  const serverSockets: Array<import("node:net").Socket> = [];
+  const bareServer = net.createServer((socket) => {
+    serverSockets.push(socket);
+    socket.setEncoding("utf8");
+    let buf = "";
+    socket.on("data", (chunk: string) => {
+      buf += chunk;
+      const i = buf.indexOf("\n");
+      if (i >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        // Expect hello — respond with hello_ack then pause.
+        if (line.includes('"hello"')) {
+          socket.write(`${JSON.stringify({ type: "hello_ack" })}\n`, () => {
+            socket.pause();
+          });
+        }
+      }
+    });
+  });
+  await new Promise<void>((resolve) => bareServer.listen(0, "127.0.0.1", () => resolve()));
+  const addr = bareServer.address() as { port: number } | null;
+  if (!addr) throw new Error("no addr");
+
+  const client = new ControlClient({
+    endpoint: `127.0.0.1:${addr.port}`,
+    sessionId: "stall-cli",
+    onDeliver: () => {},
+  });
+  await client.connect();
+
+  const start = Date.now();
+  await client.close();
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(1_500);
+
+  for (const s of serverSockets) s.destroy();
+  await new Promise<void>((resolve) => bareServer.close(() => resolve()));
+});
+
+test("ControlClient.close after onConnectionLost resolves immediately", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  let lost = 0;
+  const client = new ControlClient({
+    endpoint: info.endpoint,
+    sessionId: "loss-fast",
+    onDeliver: () => {},
+    onConnectionLost: () => {
+      lost++;
+    },
+  });
+  await client.connect();
+
+  await server.close();
+  await until(() => lost > 0, { timeout: 1000 });
+
+  const start = Date.now();
+  await client.close();
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(100);
+});
+
+test("ControlClient.onConnectionLost fires exactly once on broken connection", async () => {
+  // Build a bare server we can RST: do the hello/ack then forcibly destroy
+  // (RST-like) — Node usually emits 'error' then 'close' on RST.
+  const net = await import("node:net");
+  let serverSock: import("node:net").Socket | undefined;
+  const bareServer = net.createServer((socket) => {
+    serverSock = socket;
+    socket.setEncoding("utf8");
+    let buf = "";
+    socket.on("error", () => {});
+    socket.on("data", (chunk: string) => {
+      buf += chunk;
+      const i = buf.indexOf("\n");
+      if (i >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (line.includes('"hello"')) {
+          socket.write(`${JSON.stringify({ type: "hello_ack" })}\n`);
+        }
+      }
+    });
+  });
+  await new Promise<void>((resolve) => bareServer.listen(0, "127.0.0.1", () => resolve()));
+  const addr = bareServer.address() as { port: number } | null;
+  if (!addr) throw new Error("no addr");
+
+  let lost = 0;
+  const client = new ControlClient({
+    endpoint: `127.0.0.1:${addr.port}`,
+    sessionId: "loss-dedupe",
+    onDeliver: () => {},
+    onConnectionLost: () => {
+      lost++;
+    },
+  });
+  await client.connect();
+
+  // Force RST by destroying with an error.
+  serverSock?.destroy(new Error("forced reset"));
+
+  // Wait long enough that both error and close listeners would have fired.
+  await new Promise<void>((r) => setTimeout(r, 200));
+  expect(lost).toBe(1);
+
+  await client.close();
+  await new Promise<void>((resolve) => bareServer.close(() => resolve()));
+});
+
+test("ControlClient.connect rejects without leaving #socket set; sendTool throws 'not connected'", async () => {
+  // A bare TCP server that accepts but never sends hello_ack and then closes
+  // the socket so the connect promise rejects after the connection is established.
+  const net = await import("node:net");
+  const bareServer = net.createServer((socket) => {
+    socket.on("data", () => {
+      // Drop hello; close socket to trigger connect rejection mid-handshake.
+      socket.destroy();
+    });
+  });
+  await new Promise<void>((resolve) => bareServer.listen(0, "127.0.0.1", () => resolve()));
+  const addr = bareServer.address() as { port: number } | null;
+  if (!addr) throw new Error("no addr");
+
+  const client = new ControlClient({
+    endpoint: `127.0.0.1:${addr.port}`,
+    sessionId: "no-ack",
+    onDeliver: () => {},
+    helloAckTimeoutMs: 5_000,
+  });
+
+  await expect(client.connect()).rejects.toThrow();
+  await expect(client.sendTool("bridge_done", {})).rejects.toThrow(/not connected/);
+
+  await new Promise<void>((resolve) => bareServer.close(() => resolve()));
+});
+
 test("ControlServer buffers partial JSON lines until newline", async () => {
   const server = new ControlServer();
   const info = await server.listen({ host: "127.0.0.1", port: 0 });
