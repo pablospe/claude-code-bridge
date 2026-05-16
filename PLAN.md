@@ -125,13 +125,14 @@ The bridge and the channel server are siblings under different parents in manage
 
 The bridge provides `CCB_BRIDGE_ENDPOINT` and `CCB_SESSION_ID` to the Claude Code environment; the channel server reads them at startup.
 
-Preferred control transports:
+Control transport choice:
 
-- Unix/macOS/Linux/WSL: Unix domain socket under `$XDG_RUNTIME_DIR` or the OS temp directory.
-- Windows native: named pipe or loopback TCP on `127.0.0.1`.
+- Milestone 1: use loopback TCP on `127.0.0.1` for the bridge <-> channel-server control connection. This gives the same code path on Windows, macOS, Linux, and WSL.
+- Later Unix/macOS/Linux/WSL optimization: Unix domain socket under `$XDG_RUNTIME_DIR` or the OS temp directory.
+- Later Windows optimization: named pipe.
 - Tests: in-process mock transport.
 
-Do not hard-code Unix sockets into the core API.
+Do not hard-code Unix sockets or named pipes into the core API.
 
 For tests and mock sessions, the channel server and control transport may run in-process. That shortcut is only for tests; the real Claude Code integration must exercise the stdio MCP server path that Claude Code actually launches.
 
