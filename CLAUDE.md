@@ -18,6 +18,8 @@ Default to using Bun instead of Node.js.
 
 ## Testing
 
+Test-driven development is the working pattern. Every task delivers tests (unit or smoke) verifying the change. Within a task, work in TDD cycles: write a failing test → minimum implementation → run green → commit. No implementation without a test that exercises it. For tasks where unit tests aren't the right shape (a smoke demo, a README), require a documented smoke command instead.
+
 Use `bun test` to run tests.
 
 ```ts#index.test.ts
