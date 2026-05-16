@@ -1,4 +1,7 @@
-import { expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const CLI_PATH = new URL("./cli.ts", import.meta.url).pathname;
 
@@ -20,6 +23,16 @@ async function runCli(args: readonly string[]): Promise<{
   ]);
   return { exitCode, stdout, stderr };
 }
+
+let storeDir: string;
+
+beforeEach(async () => {
+  storeDir = await mkdtemp(join(tmpdir(), "ccb-cli-"));
+});
+
+afterEach(async () => {
+  await rm(storeDir, { recursive: true, force: true });
+});
 
 test("ccb --help prints usage and lists demo and mcp-config commands", async () => {
   const { exitCode, stdout } = await runCli(["--help"]);
@@ -51,3 +64,63 @@ test("ccb mcp-config --help lists session-id, endpoint, out flags", async () => 
   expect(stdout).toMatch(/--endpoint/);
   expect(stdout).toMatch(/--out/);
 });
+
+test(
+  "ccb demo --format json prints session.started ... session.ended over stdout",
+  async () => {
+    const { exitCode, stdout, stderr } = await runCli([
+      "demo",
+      "hello",
+      "--format",
+      "json",
+      "--store-dir",
+      storeDir,
+      "--timeout-ms",
+      "3000",
+    ]);
+    if (exitCode !== 0) {
+      throw new Error(`ccb demo exited ${exitCode}; stderr=${stderr}`);
+    }
+    const lines = stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    expect(lines.length).toBeGreaterThanOrEqual(5);
+    const parsed = lines.map((l) => JSON.parse(l) as { type: string; [k: string]: unknown });
+    expect(parsed[0]?.type).toBe("session.started");
+    expect(parsed[parsed.length - 1]?.type).toBe("session.ended");
+    const reply = parsed.find((p) => p.type === "agent.reply");
+    expect(reply).toBeDefined();
+    expect(reply?.content).toBe("echo: hello");
+    expect(reply?.final).toBe(true);
+  },
+  { timeout: 15_000 },
+);
+
+test(
+  "ccb demo --format stream emits json lines live",
+  async () => {
+    const { exitCode, stdout } = await runCli([
+      "demo",
+      "stream me",
+      "--format",
+      "stream",
+      "--store-dir",
+      storeDir,
+      "--timeout-ms",
+      "3000",
+    ]);
+    expect(exitCode).toBe(0);
+    const lines = stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    const parsed = lines.map((l) => JSON.parse(l) as { type: string; [k: string]: unknown });
+    const types = parsed.map((p) => p.type);
+    expect(types).toContain("session.started");
+    expect(types).toContain("message.sent");
+    expect(types).toContain("agent.reply");
+    expect(types).toContain("session.ended");
+  },
+  { timeout: 15_000 },
+);
