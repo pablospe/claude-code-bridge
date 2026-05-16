@@ -11,7 +11,7 @@ export interface McpConfig {
   readonly mcpServers: {
     readonly ccb: {
       readonly command: string;
-      readonly args: string[];
+      readonly args: readonly string[];
       readonly env: {
         readonly CCB_BRIDGE_ENDPOINT: string;
         readonly CCB_SESSION_ID: string;
@@ -41,7 +41,7 @@ export function generateMcpConfig(opts: McpConfigOptions): McpConfig {
 }
 
 export class ClaudeCodeSupervisor implements Supervisor {
-  async start(_ctx: SupervisorContext): Promise<never> {
+  async start(_ctx: SupervisorContext): Promise<void> {
     throw new Error("managed launch is not implemented");
   }
 

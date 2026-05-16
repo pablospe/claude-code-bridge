@@ -47,3 +47,17 @@ test("ClaudeCodeSupervisor.start throws because managed launch is not implemente
     }),
   ).rejects.toThrow(/managed launch is not implemented/);
 });
+
+test("ClaudeCodeSupervisor.sendMessage throws because managed launch is not implemented", async () => {
+  const supervisor = new ClaudeCodeSupervisor();
+  await expect(
+    supervisor.sendMessage("00000000-0000-0000-0000-000000000000", "m1", "hi"),
+  ).rejects.toThrow(/managed launch is not implemented/);
+});
+
+test("ClaudeCodeSupervisor.interrupt throws because managed launch is not implemented", async () => {
+  const supervisor = new ClaudeCodeSupervisor();
+  await expect(supervisor.interrupt("00000000-0000-0000-0000-000000000000")).rejects.toThrow(
+    /managed launch is not implemented/,
+  );
+});
