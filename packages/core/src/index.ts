@@ -1,5 +1,4 @@
-export type { BridgeOptions, SupervisorFactory } from "./bridge.ts";
-export { Bridge } from "./bridge.ts";
+export { Bridge, type BridgeOptions, type SupervisorFactory } from "./bridge.ts";
 export { EventBus } from "./bus.ts";
 export type { BridgeEvent } from "./events.ts";
 export { JsonlEventStore } from "./store.ts";

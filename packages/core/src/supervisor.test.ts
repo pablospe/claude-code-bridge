@@ -10,17 +10,9 @@ test("Supervisor can be implemented with the documented surface", async () => {
     async start(ctx: SupervisorContext): Promise<void> {
       ctx.emit({ type: "agent.progress", sessionId: "s1", content: "ready" });
     }
-    async sendMessage(sessionId: string, messageId: string, content: string): Promise<void> {
-      void sessionId;
-      void messageId;
-      void content;
-    }
-    async interrupt(sessionId: string): Promise<void> {
-      void sessionId;
-    }
-    async close(sessionId: string): Promise<void> {
-      void sessionId;
-    }
+    async sendMessage(_sessionId: string, _messageId: string, _content: string): Promise<void> {}
+    async interrupt(_sessionId: string): Promise<void> {}
+    async close(_sessionId: string): Promise<void> {}
   }
 
   const supervisor: Supervisor = new StubSupervisor();

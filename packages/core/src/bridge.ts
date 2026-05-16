@@ -171,7 +171,8 @@ export class Bridge implements ClaudeCodeBridge {
 
   /**
    * Read all events persisted for a session. Convenience for tests and tools
-   * that need the full history without subscribing live.
+   * that need the full history without subscribing live. Active-session reads
+   * may not include the most recent in-flight supervisor-emitted events.
    */
   async readStoredEvents(sessionId: string): Promise<BridgeEvent[]> {
     if (!UUID_RE.test(sessionId)) {

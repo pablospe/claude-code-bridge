@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { access, mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bridge } from "./bridge.ts";
@@ -198,17 +198,14 @@ test("startSession cleans up when supervisor.start throws", async () => {
 
   await expect(b.startSession({})).rejects.toThrow("boom");
 
-  // Pick up the most recent jsonl file if any, and confirm no leftover state
-  // by sending to a presumed-known id — the bridge should not have it.
+  // No leftover internal session: sending to any id must reject as unknown.
   await expect(b.sendMessage("any-id", "x")).rejects.toThrow(/unknown session/);
 
-  // No completed JSONL file should remain with a session.started in it.
-  const files = await readdir(dir).catch(() => [] as string[]);
-  for (const f of files) {
-    if (!f.endsWith(".jsonl")) continue;
-    const text = await Bun.file(join(dir, f)).text();
-    expect(text).toBe("");
-  }
+  // No jsonl file should be left on disk.
+  const files = (await readdir(dir).catch(() => [] as string[])).filter((f) =>
+    f.endsWith(".jsonl"),
+  );
+  expect(files).toHaveLength(0);
 });
 
 test("readStoredEvents rejects sessionIds that are not UUIDs", async () => {
@@ -284,36 +281,6 @@ test("close drains in-flight supervisor-emitted appends before tearing down", as
   expect(stored.at(-1)?.type).toBe("session.ended");
   const progress = stored.filter((e) => e.type === "agent.progress");
   expect(progress).toHaveLength(20);
-});
-
-test("startSession does not leave a file behind when supervisor.start rejects", async () => {
-  class FailingSupervisor implements Supervisor {
-    async start(): Promise<void> {
-      throw new Error("nope");
-    }
-    async sendMessage(): Promise<void> {}
-    async interrupt(): Promise<void> {}
-    async close(): Promise<void> {}
-  }
-
-  const b = new Bridge({
-    storeDir: dir,
-    supervisorFactory: () => new FailingSupervisor(),
-  });
-
-  await expect(b.startSession({})).rejects.toThrow();
-  // any jsonl files must be empty (no session.started leaked)
-  const files = (await readdir(dir).catch(() => [] as string[])).filter((f) =>
-    f.endsWith(".jsonl"),
-  );
-  for (const f of files) {
-    const stat = await access(join(dir, f))
-      .then(() => true)
-      .catch(() => false);
-    expect(stat).toBe(true);
-    const text = await Bun.file(join(dir, f)).text();
-    expect(text).toBe("");
-  }
 });
 
 test("close() drains pending appends and tears down even if supervisor.close throws", async () => {
