@@ -64,23 +64,32 @@ The bridge library owns session state, event normalization, and integration APIs
 
 ## Directional Communication
 
-Inbound to Claude Code:
+Inbound to Claude Code (bridge -> Claude):
 
 ```text
 consumer
-  -> bridge.sendMessage(...)
-  -> MCP channel notification
-  -> Claude Code receives <channel ...> content
+  -> bridge.sendMessage(sessionId, content)
+  -> channel server emits notifications/claude/channel
+  -> Claude Code surfaces <channel source="ccb" session_id="..." message_id="...">content</channel>
 ```
 
-Outbound from Claude Code:
+The channel server declares `capabilities.experimental['claude/channel'] = {}`. Channels are a Claude Code research-preview feature ([reference](https://code.claude.com/docs/en/channels-reference)) and require launching with `--dangerously-load-development-channels server:ccb` until the channel is on the approved allowlist.
+
+Outbound from Claude Code (Claude -> bridge):
 
 ```text
 Claude Code
-  -> MCP tool call: reply/progress/request_input/done
-  -> bridge event log
+  -> MCP tool call: bridge_reply / bridge_progress / bridge_done
+  -> channel server forwards over per-session unix socket
+  -> bridge appends to JSONL event log
   -> consumer event stream
 ```
+
+- `bridge_reply({ content, final })` — response payload; `final:true` marks the answer complete.
+- `bridge_progress({ content })` — intermediate progress before a final reply.
+- `bridge_done({ reason? })` — end of turn; bridge tears down the session when configured.
+
+The channel server's `instructions` field (added to Claude's system prompt) tells Claude when to call each tool.
 
 Observation and backup:
 
@@ -92,6 +101,27 @@ Claude Code hooks
 PTY/tmux capture
   -> raw terminal view or emergency fallback only
 ```
+
+## Process Topology
+
+Claude Code spawns each MCP server as its own stdio subprocess, so the channel server cannot be embedded in the bridge process. The runtime topology is three processes:
+
+```text
+ccb (bridge library + CLI)
+  │
+  └─ spawn: claude --dangerously-load-development-channels server:ccb
+        │
+        └─ spawn: ccb channel server (stdio child of claude)
+              │
+              └─ unix socket connect: $XDG_RUNTIME_DIR/ccb-<sessionId>.sock
+```
+
+The bridge and the channel server are siblings under different parents. They share a per-session unix socket carrying a JSON-lines control protocol:
+
+- bridge -> channel server: `{ type: "deliver", content, messageId, meta }` -> server emits `notifications/claude/channel`.
+- channel server -> bridge: `{ type: "tool", name, args }` -> bridge appends the event and fans out to consumers.
+
+The bridge passes `CCB_BRIDGE_SOCKET` and `CCB_SESSION_ID` as env vars when spawning `claude`; the channel server reads them at startup.
 
 ## Library Surface
 
@@ -116,6 +146,8 @@ interface ClaudeChannelBridge {
 }
 ```
 
+`events(sessionId)` is a live tail from subscribe-time forward in milestone 1. The options type reserves a `since` field for later replay-from-cursor support backed by the JSONL store.
+
 The API should be library-first. A local daemon, CLI, HTTP server, WebSocket server, and ACP facade can be built as adapters on top.
 
 ## Package Layout
@@ -133,7 +165,9 @@ packages/mcp-channel
   MCP channel server and outbound reply/progress tools
 
 packages/node-pty
-  PTY/tmux helpers for launch, interrupt, raw observation, fallback
+  Deferred past milestone 1. PTY/tmux helpers for launch, interrupt, raw
+  observation, and fallback. Reintroduced only if `claude` refuses headless
+  boot (TTY surrogate) or if a fallback observation layer is needed.
 
 packages/http
   optional REST/WebSocket adapter for UIs like T3 Code
@@ -162,9 +196,12 @@ Success criteria:
 
 - no `claude -p`
 - no Agent SDK dependency
-- no terminal scraping for the main reply path
-- session events are persisted as append-only JSONL
+- inbound messages delivered as `notifications/claude/channel`
+- outbound semantic events delivered as MCP tool calls (`bridge_reply` / `bridge_progress` / `bridge_done`)
+- no PTY/tmux on the protocol path
+- session events persisted as append-only JSONL
 - consumer can subscribe to events while the turn is running
+- `MockSupervisor` covers unit and CI tests; `ClaudeCodeSupervisor` spawns real `claude` with `--dangerously-load-development-channels server:ccb` for the smoke demo
 
 ## Integration Strategy
 
@@ -202,7 +239,7 @@ Recommended answer: JSONL first. Add SQLite when querying/indexing becomes neces
 
 3. Should the MCP channel server be embedded in the library process or launched as a child process?
 
-Recommended answer: embedded first for simpler lifecycle and event routing.
+Decided: it cannot be embedded. Claude Code spawns channel servers as its own stdio subprocesses, so the topology is three processes — bridge, claude, channel server — and the bridge talks to the channel server over a per-session unix socket at `$XDG_RUNTIME_DIR/ccb-<sessionId>.sock`. See [Process Topology](#process-topology).
 
 4. Should ACP be implemented in milestone 1?
 
