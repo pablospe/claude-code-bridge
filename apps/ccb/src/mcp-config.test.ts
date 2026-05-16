@@ -85,6 +85,25 @@ test("ccb mcp-config without --endpoint exits non-zero with an endpoint error", 
   expect(stderr.toLowerCase()).toMatch(/endpoint/);
 });
 
+test("runMcpConfig throws on an endpoint not matching host:port", async () => {
+  await expect(runMcpConfig({ sessionId: "s1", endpoint: "bogus" })).rejects.toThrow(
+    /invalid endpoint/i,
+  );
+});
+
+test("ccb mcp-config --endpoint bogus exits non-zero with a format error", async () => {
+  const child = Bun.spawn({
+    cmd: ["bun", CLI_PATH, "mcp-config", "--endpoint", "bogus"],
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const stderr = await new Response(child.stderr).text();
+  const exitCode = await child.exited;
+  expect(exitCode).not.toBe(0);
+  expect(stderr.toLowerCase()).toMatch(/invalid endpoint|host:port/);
+});
+
 test("ccb mcp-config --out writes to the file and prints the path", async () => {
   const outPath = join(workDir, "mcp.json");
   const child = Bun.spawn({

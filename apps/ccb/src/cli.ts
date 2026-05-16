@@ -4,7 +4,7 @@ import type { SupervisorFactory } from "@ccb/core";
 import { Command, InvalidArgumentError } from "commander";
 import { type DemoFormat, runDemo } from "./demo.ts";
 import { formatJson, formatPretty } from "./format.ts";
-import { runMcpConfig } from "./mcp-config.ts";
+import { isValidEndpoint, runMcpConfig } from "./mcp-config.ts";
 
 const VERSION = "0.0.1";
 
@@ -24,6 +24,13 @@ function parseFormat(value: string): DemoFormat {
 function parseSupervisor(value: string): "mock" {
   if (value === "mock") return value;
   throw new InvalidArgumentError("only 'mock' is supported");
+}
+
+function parseEndpointOption(value: string): string {
+  if (!isValidEndpoint(value)) {
+    throw new InvalidArgumentError("invalid endpoint format: expected host:port");
+  }
+  return value;
 }
 
 function supervisorFor(kind: "mock"): SupervisorFactory {
@@ -87,6 +94,7 @@ export function buildProgram(): Command {
     .requiredOption(
       "--endpoint <host:port>",
       "bridge control endpoint the channel server connects to",
+      parseEndpointOption,
     )
     .option("--out <path>", "write the JSON to this path instead of stdout")
     .action(async (opts: McpConfigCommandOptions) => {

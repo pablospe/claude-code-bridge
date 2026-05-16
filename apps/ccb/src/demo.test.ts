@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mockSupervisorFactory } from "@ccb/claude-code";
+import type { Supervisor, SupervisorContext, SupervisorFactory } from "@ccb/core";
 import { runDemo } from "./demo.ts";
 
 let storeDir: string;
@@ -62,4 +63,119 @@ test("runDemo collects events identically with format=pretty", async () => {
     "agent.reply",
     "session.ended",
   ]);
+});
+
+class HangingCloseSupervisor implements Supervisor {
+  #ctx: SupervisorContext | undefined;
+  async start(ctx: SupervisorContext): Promise<void> {
+    this.#ctx = ctx;
+  }
+  async sendMessage(sessionId: string): Promise<void> {
+    const ctx = this.#ctx;
+    if (!ctx) return;
+    ctx.emit({ type: "agent.reply", sessionId, content: "done", final: true });
+  }
+  async interrupt(): Promise<void> {}
+  async close(): Promise<void> {
+    // Never resolves: simulates a wedged supervisor.
+    return new Promise<void>(() => {});
+  }
+}
+
+function hangingCloseSupervisorFactory(): SupervisorFactory {
+  return () => new HangingCloseSupervisor();
+}
+
+test("runDemo bounds bridge.close within the overall deadline when supervisor hangs", async () => {
+  const start = Date.now();
+  const result = await runDemo({
+    input: "hello",
+    supervisorFactory: hangingCloseSupervisorFactory(),
+    format: "json",
+    storeDir,
+    timeoutMs: 200,
+  });
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(1500);
+  // Even if close hangs, we still have a sessionId and at minimum session.started
+  // was persisted before the wedge.
+  expect(result.sessionId.length).toBeGreaterThan(0);
+});
+
+function silentHangingSupervisorFactory(): SupervisorFactory {
+  return () =>
+    ({
+      async start() {
+        // Emit nothing; collection will time out.
+      },
+      async sendMessage() {
+        // no-op; never replies.
+      },
+      async interrupt() {
+        // no-op
+      },
+      async close() {
+        return new Promise<void>(() => {});
+      },
+    }) satisfies Supervisor;
+}
+
+test("runDemo timeout path also bounds cleanup close", async () => {
+  const start = Date.now();
+  await expect(
+    runDemo({
+      input: "hello",
+      supervisorFactory: silentHangingSupervisorFactory(),
+      format: "json",
+      storeDir,
+      timeoutMs: 200,
+    }),
+  ).rejects.toThrow();
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(2000);
+});
+
+class PostReplyToolSupervisor implements Supervisor {
+  #ctx: SupervisorContext | undefined;
+  async start(ctx: SupervisorContext): Promise<void> {
+    this.#ctx = ctx;
+  }
+  async sendMessage(sessionId: string): Promise<void> {
+    const ctx = this.#ctx;
+    if (!ctx) return;
+    ctx.emit({
+      type: "agent.reply",
+      sessionId,
+      content: "done",
+      final: true,
+    });
+    ctx.emit({
+      type: "tool.event",
+      sessionId,
+      payload: { after: "reply" },
+    });
+  }
+  async interrupt(): Promise<void> {}
+  async close(): Promise<void> {
+    this.#ctx = undefined;
+  }
+}
+
+test("runDemo stream mode delivers events between final reply and session.ended", async () => {
+  const observed: string[] = [];
+  await runDemo({
+    input: "hello",
+    supervisorFactory: () => new PostReplyToolSupervisor(),
+    format: "stream",
+    storeDir,
+    timeoutMs: 2000,
+    onEvent: (ev) => {
+      observed.push(ev.type);
+    },
+  });
+  // The stream callback must see the tool.event emitted after the final reply
+  // and before session.ended, not silently drop it.
+  expect(observed).toContain("tool.event");
+  // session.ended must be the last event the stream observer sees.
+  expect(observed[observed.length - 1]).toBe("session.ended");
 });

@@ -30,9 +30,27 @@ class DemoTimeoutError extends Error {
   }
 }
 
+const CLEANUP_CLOSE_TIMEOUT_MS = 1_000;
+
 function pickFormatter(format: DemoFormat): Formatter {
   if (format === "pretty") return formatPretty;
   return formatJson;
+}
+
+function raceWithTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  if (timeoutMs <= 0) {
+    return Promise.reject(new Error(`${label} timed out`));
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timed out`));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 export async function runDemo(opts: DemoOptions): Promise<DemoResult> {
@@ -45,6 +63,9 @@ export async function runDemo(opts: DemoOptions): Promise<DemoResult> {
   const handle = await bridge.startSession({});
   const sessionId = handle.id;
 
+  const deadlineMs = Date.now() + opts.timeoutMs;
+  const remaining = (): number => Math.max(0, deadlineMs - Date.now());
+
   // Surface session.started immediately; live subscription begins on the
   // next tick and would otherwise miss the head of the lifecycle.
   const startedEvent: BridgeEvent = { type: "session.started", sessionId };
@@ -52,18 +73,19 @@ export async function runDemo(opts: DemoOptions): Promise<DemoResult> {
 
   const subscription = bridge.events(sessionId);
 
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      reject(new DemoTimeoutError(opts.timeoutMs));
-    }, opts.timeoutMs);
-    timer.unref?.();
-  });
+  let closePromise: Promise<void> | undefined;
+  const triggerClose = (): void => {
+    if (closePromise !== undefined) return;
+    closePromise = bridge.close(sessionId);
+  };
 
-  const collect = (async () => {
+  const collectP = (async () => {
     for await (const ev of subscription) {
       opts.onEvent?.(ev, formatter(ev));
       if (ev.type === "agent.reply" && ev.final) {
+        triggerClose();
+      }
+      if (ev.type === "session.ended") {
         break;
       }
     }
@@ -71,20 +93,32 @@ export async function runDemo(opts: DemoOptions): Promise<DemoResult> {
 
   try {
     await bridge.sendMessage(sessionId, opts.input);
-    await Promise.race([collect, timeoutPromise]);
+    await raceWithTimeout(collectP, remaining(), "demo").catch((err) => {
+      if (err instanceof Error && err.message === "demo timed out") {
+        throw new DemoTimeoutError(opts.timeoutMs);
+      }
+      throw err;
+    });
   } catch (err) {
-    await bridge.close(sessionId).catch(() => undefined);
+    triggerClose();
+    await collectP.catch(() => undefined);
+    const cleanupBudget = Math.min(CLEANUP_CLOSE_TIMEOUT_MS, Math.max(remaining(), 50));
+    const cleanupClose = closePromise ?? bridge.close(sessionId);
+    await raceWithTimeout(cleanupClose, cleanupBudget, "bridge.close cleanup").catch(
+      (closeErr: unknown) => {
+        const msg = closeErr instanceof Error ? closeErr.message : String(closeErr);
+        process.stderr.write(`ccb: ${msg}\n`);
+      },
+    );
     throw err;
-  } finally {
-    if (timer) clearTimeout(timer);
   }
 
-  await bridge.close(sessionId);
-
-  // session.ended is appended during close; surface it for stream mode and
-  // include it in the returned event list.
-  const endedEvent: BridgeEvent = { type: "session.ended", sessionId };
-  opts.onEvent?.(endedEvent, formatter(endedEvent));
+  const closeBudget = Math.max(remaining(), 50);
+  const closeWait = closePromise ?? bridge.close(sessionId);
+  await raceWithTimeout(closeWait, closeBudget, "bridge.close").catch((closeErr: unknown) => {
+    const msg = closeErr instanceof Error ? closeErr.message : String(closeErr);
+    process.stderr.write(`ccb: ${msg}\n`);
+  });
 
   // Pull the authoritative ordered record from JSONL so the returned list
   // reflects the full lifecycle.
