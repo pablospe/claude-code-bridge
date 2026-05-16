@@ -83,19 +83,17 @@ export function buildProgram(): Command {
   program
     .command("mcp-config")
     .description("emit the .mcp.json shape Claude Code expects via --mcp-config")
-    .option("--session-id <id>", "session id to embed in the config", () => crypto.randomUUID())
-    .option("--endpoint <host:port>", "bridge control endpoint the channel server connects to")
+    .option("--session-id <id>", "session id to embed in the config (defaults to a random UUID)")
+    .requiredOption(
+      "--endpoint <host:port>",
+      "bridge control endpoint the channel server connects to",
+    )
     .option("--out <path>", "write the JSON to this path instead of stdout")
     .action(async (opts: McpConfigCommandOptions) => {
-      const endpoint = opts.endpoint;
-      if (!endpoint) {
-        program.error("error: required option '--endpoint <host:port>' not specified");
-        return;
-      }
       const sessionId = opts.sessionId ?? crypto.randomUUID();
       const output = await runMcpConfig({
         sessionId,
-        endpoint,
+        endpoint: opts.endpoint,
         out: opts.out,
       });
       process.stdout.write(`${output}\n`);
@@ -113,7 +111,7 @@ interface DemoCommandOptions {
 
 interface McpConfigCommandOptions {
   readonly sessionId?: string;
-  readonly endpoint?: string;
+  readonly endpoint: string;
   readonly out?: string;
 }
 
