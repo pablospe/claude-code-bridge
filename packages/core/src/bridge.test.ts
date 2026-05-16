@@ -2,8 +2,9 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Bridge } from "./bridge.ts";
+import { Bridge, type BridgeEventStore } from "./bridge.ts";
 import type { BridgeEvent } from "./events.ts";
+import { JsonlEventStore } from "./store.ts";
 import type { Supervisor, SupervisorContext } from "./supervisor.ts";
 
 class StubSupervisor implements Supervisor {
@@ -402,6 +403,87 @@ test("startSession with a supervisor that emits then throws leaves no jsonl file
     f.endsWith(".jsonl"),
   );
   expect(files).toHaveLength(0);
+});
+
+test("close() still runs supervisor.close even when session.ended persistence rejects", async () => {
+  // Store wrapper that delegates to a real JsonlEventStore but rejects the
+  // append for session.ended. supervisor.close MUST still be called and the
+  // bus/store/map MUST still be torn down. The first error wins.
+  class FailEndedStore implements BridgeEventStore {
+    readonly #real: JsonlEventStore;
+    constructor(path: string) {
+      this.#real = new JsonlEventStore(path);
+    }
+    append(event: BridgeEvent): Promise<void> {
+      if (event.type === "session.ended") {
+        return Promise.reject(new Error("store append boom"));
+      }
+      return this.#real.append(event);
+    }
+    readAll(): Promise<BridgeEvent[]> {
+      return this.#real.readAll();
+    }
+    close(): Promise<void> {
+      return this.#real.close();
+    }
+  }
+
+  const b = new Bridge({
+    storeDir: dir,
+    supervisorFactory: () => supervisor,
+    storeFactory: (_id, path) => new FailEndedStore(path),
+  });
+
+  const handle = await b.startSession({});
+  await expect(b.close(handle.id)).rejects.toThrow("store append boom");
+
+  // Resource cleanup happened despite the persistence failure.
+  expect(supervisor.closed).toEqual([handle.id]);
+
+  // Bus is closed: events(id) ends immediately.
+  const seen: BridgeEvent[] = [];
+  for await (const e of b.events(handle.id)) seen.push(e);
+  expect(seen).toEqual([]);
+
+  // Session removed from the map: second close is a no-op.
+  await expect(b.close(handle.id)).resolves.toBeUndefined();
+});
+
+test("concurrent close() shares the in-flight teardown promise", async () => {
+  class SlowCloseSupervisor implements Supervisor {
+    closedAt: number | undefined;
+    closeCalls = 0;
+    async start(): Promise<void> {}
+    async sendMessage(): Promise<void> {}
+    async interrupt(): Promise<void> {}
+    async close(): Promise<void> {
+      this.closeCalls++;
+      await new Promise((r) => setTimeout(r, 50));
+      this.closedAt = Date.now();
+    }
+  }
+  const sup = new SlowCloseSupervisor();
+  const b = new Bridge({
+    storeDir: dir,
+    supervisorFactory: () => sup,
+  });
+
+  const handle = await b.startSession({});
+
+  const p1 = b.close(handle.id);
+  const p2 = b.close(handle.id);
+
+  // Both must resolve at essentially the same time, because the second
+  // call MUST await the same underlying teardown — not return early.
+  const t1Promise = p1.then(() => Date.now());
+  const t2Promise = p2.then(() => Date.now());
+  const [t1, t2] = await Promise.all([t1Promise, t2Promise]);
+  expect(Math.abs(t2 - t1)).toBeLessThan(5);
+
+  expect(sup.closeCalls).toBe(1);
+  const stored = await b.readStoredEvents(handle.id);
+  const endedCount = stored.filter((e) => e.type === "session.ended").length;
+  expect(endedCount).toBe(1);
 });
 
 test("supervisor events with wrong sessionId are dropped and logged", async () => {

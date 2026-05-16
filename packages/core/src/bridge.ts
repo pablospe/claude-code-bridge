@@ -18,11 +18,29 @@ import type {
  */
 export type SupervisorFactory = (sessionId: string) => Supervisor;
 
+/** Minimal store contract used by Bridge. Matches JsonlEventStore. */
+export interface BridgeEventStore {
+  append(event: BridgeEvent): Promise<void>;
+  readAll(): Promise<BridgeEvent[]>;
+  close(): Promise<void>;
+}
+
+/**
+ * Builds a store for a new session. Test-only seam; defaults to JsonlEventStore.
+ */
+export type StoreFactory = (sessionId: string, path: string) => BridgeEventStore;
+
 export interface BridgeOptions {
   /** Directory where per-session JSONL logs are written. */
   storeDir: string;
   /** Factory invoked once per startSession to build the session supervisor. */
   supervisorFactory: SupervisorFactory;
+  /**
+   * Optional factory for the per-session event store. Defaults to building a
+   * JsonlEventStore at `${storeDir}/${sessionId}.jsonl`. Exists primarily so
+   * tests can inject failure modes.
+   */
+  storeFactory?: StoreFactory;
 }
 
 type SessionState = "starting" | "open" | "closing" | "closed";
@@ -30,11 +48,13 @@ type SessionState = "starting" | "open" | "closing" | "closed";
 interface Session {
   readonly id: string;
   readonly bus: EventBus;
-  readonly store: JsonlEventStore;
+  readonly store: BridgeEventStore;
   readonly supervisor: Supervisor;
   state: SessionState;
   /** Fire-and-forget append promises emitted from the supervisor path. */
   readonly pending: Set<Promise<void>>;
+  /** Shared promise for an in-flight close so concurrent callers await it. */
+  closingPromise?: Promise<void>;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -54,17 +74,19 @@ export class Bridge implements ClaudeCodeBridge {
   readonly #sessions = new Map<string, Session>();
   readonly #storeDir: string;
   readonly #supervisorFactory: SupervisorFactory;
+  readonly #storeFactory: StoreFactory;
 
   constructor(options: BridgeOptions) {
     this.#storeDir = options.storeDir;
     this.#supervisorFactory = options.supervisorFactory;
+    this.#storeFactory = options.storeFactory ?? ((_id, path) => new JsonlEventStore(path));
   }
 
   async startSession(_options: StartSessionOptions): Promise<SessionHandle> {
     const id = crypto.randomUUID();
     const bus = new EventBus();
     const storePath = join(this.#storeDir, `${id}.jsonl`);
-    const store = new JsonlEventStore(storePath);
+    const store = this.#storeFactory(id, storePath);
     const supervisor = this.#supervisorFactory(id);
 
     const session: Session = {
@@ -146,14 +168,32 @@ export class Bridge implements ClaudeCodeBridge {
   async close(sessionId: string): Promise<void> {
     const session = this.#sessions.get(sessionId);
     if (!session) return;
-    if (session.state === "closing" || session.state === "closed") return;
+    // Concurrent close: share the same in-flight teardown so callers
+    // observe the real completion, not a false-positive resolve.
+    if (session.closingPromise) return session.closingPromise;
+    if (session.state === "closed") return;
     session.state = "closing";
+    session.closingPromise = this.#runClose(session);
+    return session.closingPromise;
+  }
+
+  async #runClose(session: Session): Promise<void> {
+    const sessionId = session.id;
     let inner: unknown;
     try {
-      await this.#emitAwaited(session, { type: "session.ended", sessionId });
-      await session.supervisor.close(sessionId);
-    } catch (err) {
-      inner = err;
+      // Persist session.ended and tear down the supervisor independently:
+      // a persistence failure must NOT short-circuit supervisor.close(),
+      // otherwise resources leak. Preserve the first error.
+      try {
+        await this.#emitAwaited(session, { type: "session.ended", sessionId });
+      } catch (err) {
+        inner = err;
+      }
+      try {
+        await session.supervisor.close(sessionId);
+      } catch (err) {
+        if (inner === undefined) inner = err;
+      }
     } finally {
       // Drain in-flight supervisor-emitted appends before closing the store.
       if (session.pending.size > 0) {
