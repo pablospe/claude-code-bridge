@@ -4,6 +4,7 @@ import { Command, InvalidArgumentError } from "commander";
 import { type DemoFormat, runDemo } from "./demo.ts";
 import { formatJson, formatPretty } from "./format.ts";
 import { isValidEndpoint, runMcpConfig } from "./mcp-config.ts";
+import { runServe, type ServeFormat } from "./serve.ts";
 
 const VERSION = "0.0.1";
 
@@ -19,6 +20,13 @@ interface McpConfigCommandOptions {
   readonly out?: string;
 }
 
+interface ServeCommandOptions {
+  readonly endpoint: string;
+  readonly sessionId?: string;
+  readonly storeDir: string;
+  readonly format: ServeFormat;
+}
+
 function parsePositiveInt(value: string): number {
   const n = Number(value);
   if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
@@ -30,6 +38,11 @@ function parsePositiveInt(value: string): number {
 function parseFormat(value: string): DemoFormat {
   if (value === "json" || value === "pretty" || value === "stream") return value;
   throw new InvalidArgumentError("must be one of: json, pretty, stream");
+}
+
+function parseServeFormat(value: string): ServeFormat {
+  if (value === "json" || value === "pretty") return value;
+  throw new InvalidArgumentError("must be one of: json, pretty");
 }
 
 function parseEndpointOption(value: string): string {
@@ -81,7 +94,32 @@ export function buildProgram(): Command {
       }
     });
 
-  // TODO(real-claude smoke): add `ccb serve --endpoint <host:port> --session-id <id>` using ControlServer from @ccb/mcp-channel; print events as JSON on stdout, "listening on host:port" on stderr, and drive bridge.close on SIGINT/SIGTERM.
+  program
+    .command("serve")
+    .description("host the bridge control endpoint for a manual real-claude smoke session")
+    .requiredOption(
+      "--endpoint <host:port>",
+      "host:port to bind the bridge control endpoint",
+      parseEndpointOption,
+    )
+    .option("--session-id <id>", "session id to use (defaults to a random UUID)")
+    .option("--store-dir <path>", "directory for per-session JSONL logs", ".ccb-data")
+    .option(
+      "--format <json|pretty>",
+      "output format for the live event stream",
+      parseServeFormat,
+      "pretty" as ServeFormat,
+    )
+    .action(async (opts: ServeCommandOptions) => {
+      const sessionId = opts.sessionId ?? crypto.randomUUID();
+      await runServe({
+        endpoint: opts.endpoint,
+        sessionId,
+        storeDir: opts.storeDir,
+        format: opts.format,
+      });
+    });
+
   program
     .command("mcp-config")
     .description("emit the .mcp.json shape Claude Code expects via --mcp-config")

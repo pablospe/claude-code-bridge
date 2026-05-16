@@ -19,6 +19,7 @@
       "dependencies": {
         "@ccb/claude-code": "workspace:*",
         "@ccb/core": "workspace:*",
+        "@ccb/mcp-channel": "workspace:*",
         "commander": "^12.0.0",
       },
     },

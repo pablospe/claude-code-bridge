@@ -34,12 +34,13 @@ afterEach(async () => {
   await rm(storeDir, { recursive: true, force: true });
 });
 
-test("ccb --help prints usage and lists demo and mcp-config commands", async () => {
+test("ccb --help prints usage and lists demo, mcp-config, and serve commands", async () => {
   const { exitCode, stdout } = await runCli(["--help"]);
   expect(exitCode).toBe(0);
   expect(stdout).toMatch(/Usage:/);
   expect(stdout).toMatch(/\bdemo\b/);
   expect(stdout).toMatch(/\bmcp-config\b/);
+  expect(stdout).toMatch(/\bserve\b/);
 });
 
 test("ccb --version prints a version string", async () => {
@@ -63,6 +64,15 @@ test("ccb mcp-config --help lists session-id, endpoint, out flags", async () => 
   expect(stdout).toMatch(/--session-id/);
   expect(stdout).toMatch(/--endpoint/);
   expect(stdout).toMatch(/--out/);
+});
+
+test("ccb serve --help lists endpoint, session-id, store-dir, format flags", async () => {
+  const { exitCode, stdout } = await runCli(["serve", "--help"]);
+  expect(exitCode).toBe(0);
+  expect(stdout).toMatch(/--endpoint/);
+  expect(stdout).toMatch(/--session-id/);
+  expect(stdout).toMatch(/--store-dir/);
+  expect(stdout).toMatch(/--format/);
 });
 
 test(
