@@ -104,6 +104,9 @@ export class Bridge implements ClaudeCodeBridge {
 
   async sendMessage(sessionId: string, content: string, _options?: SendOptions): Promise<string> {
     const session = this.#requireSession(sessionId);
+    if (session.state !== "open") {
+      throw new Error(`session is closing: ${sessionId}`);
+    }
     const messageId = crypto.randomUUID();
     await this.#emitAwaited(session, {
       type: "message.sent",
@@ -129,23 +132,36 @@ export class Bridge implements ClaudeCodeBridge {
 
   async interrupt(sessionId: string): Promise<void> {
     const session = this.#requireSession(sessionId);
+    if (session.state !== "open") {
+      throw new Error(`session is closing: ${sessionId}`);
+    }
     await session.supervisor.interrupt(sessionId);
   }
 
   async close(sessionId: string): Promise<void> {
     const session = this.#sessions.get(sessionId);
     if (!session) return;
+    if (session.state === "closing" || session.state === "closed") return;
     session.state = "closing";
-    await this.#emitAwaited(session, { type: "session.ended", sessionId });
-    await session.supervisor.close(sessionId);
-    // Drain in-flight supervisor-emitted appends before closing the store.
-    if (session.pending.size > 0) {
-      await Promise.allSettled([...session.pending]);
+    let inner: unknown;
+    try {
+      await this.#emitAwaited(session, { type: "session.ended", sessionId });
+      await session.supervisor.close(sessionId);
+    } catch (err) {
+      inner = err;
+    } finally {
+      // Drain in-flight supervisor-emitted appends before closing the store.
+      if (session.pending.size > 0) {
+        await Promise.allSettled([...session.pending]);
+      }
+      session.bus.close();
+      await session.store.close().catch(() => undefined);
+      session.state = "closed";
+      this.#sessions.delete(sessionId);
     }
-    session.bus.close();
-    await session.store.close();
-    session.state = "closed";
-    this.#sessions.delete(sessionId);
+    if (inner !== undefined) {
+      throw inner;
+    }
   }
 
   /**
@@ -175,6 +191,12 @@ export class Bridge implements ClaudeCodeBridge {
    * can drain it. Drops events once the session is closing/closed.
    */
   #emitFromSupervisor(session: Session, event: BridgeEvent): void {
+    if (event.sessionId !== session.id) {
+      console.error(
+        `Bridge: dropping supervisor event with wrong sessionId (expected ${session.id}, got ${event.sessionId})`,
+      );
+      return;
+    }
     if (session.state === "closing" || session.state === "closed") {
       return;
     }

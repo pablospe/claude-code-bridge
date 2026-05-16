@@ -315,3 +315,133 @@ test("startSession does not leave a file behind when supervisor.start rejects", 
     expect(text).toBe("");
   }
 });
+
+test("close() drains pending appends and tears down even if supervisor.close throws", async () => {
+  class BurstThenFailCloseSupervisor implements Supervisor {
+    ctx: SupervisorContext | undefined;
+    async start(ctx: SupervisorContext): Promise<void> {
+      this.ctx = ctx;
+      for (let i = 0; i < 5; i++) {
+        ctx.emit({ type: "agent.progress", sessionId: ctx.sessionId, content: `tick-${i}` });
+      }
+    }
+    async sendMessage(): Promise<void> {}
+    async interrupt(): Promise<void> {}
+    async close(): Promise<void> {
+      throw new Error("supervisor close boom");
+    }
+  }
+
+  const b = new Bridge({
+    storeDir: dir,
+    supervisorFactory: () => new BurstThenFailCloseSupervisor(),
+  });
+  const handle = await b.startSession({});
+
+  await expect(b.close(handle.id)).rejects.toThrow("supervisor close boom");
+
+  // events(id) returns an empty/closed iterable after close
+  const seen: BridgeEvent[] = [];
+  for await (const e of b.events(handle.id)) seen.push(e);
+  expect(seen).toEqual([]);
+
+  // second close is a no-op
+  await expect(b.close(handle.id)).resolves.toBeUndefined();
+
+  // JSONL is fully flushed: session.started + 5 progress + session.ended
+  const stored = await b.readStoredEvents(handle.id);
+  expect(stored[0]?.type).toBe("session.started");
+  expect(stored.at(-1)?.type).toBe("session.ended");
+  const progress = stored.filter((e) => e.type === "agent.progress");
+  expect(progress).toHaveLength(5);
+});
+
+test("concurrent close() calls only emit session.ended once and call supervisor.close once", async () => {
+  const handle = await bridge.startSession({});
+  await Promise.all([bridge.close(handle.id), bridge.close(handle.id)]);
+
+  expect(supervisor.closed).toEqual([handle.id]);
+  const stored = await bridge.readStoredEvents(handle.id);
+  const endedCount = stored.filter((e) => e.type === "session.ended").length;
+  expect(endedCount).toBe(1);
+});
+
+test("sendMessage during close rejects with 'closing' and does not append after session.ended", async () => {
+  class SlowCloseSupervisor implements Supervisor {
+    async start(): Promise<void> {}
+    async sendMessage(): Promise<void> {}
+    async interrupt(): Promise<void> {}
+    async close(): Promise<void> {
+      await new Promise((r) => setTimeout(r, 30));
+    }
+  }
+  const b = new Bridge({
+    storeDir: dir,
+    supervisorFactory: () => new SlowCloseSupervisor(),
+  });
+  const handle = await b.startSession({});
+
+  const closing = b.close(handle.id);
+  // yield so close sets state to "closing"
+  await new Promise((r) => setTimeout(r, 5));
+  await expect(b.sendMessage(handle.id, "late")).rejects.toThrow(/closing/);
+  await closing;
+
+  const stored = await b.readStoredEvents(handle.id);
+  expect(stored.at(-1)?.type).toBe("session.ended");
+  expect(stored.find((e) => e.type === "message.sent")).toBeUndefined();
+});
+
+test("interrupt during close rejects with 'closing'", async () => {
+  class SlowCloseSupervisor implements Supervisor {
+    async start(): Promise<void> {}
+    async sendMessage(): Promise<void> {}
+    async interrupt(): Promise<void> {}
+    async close(): Promise<void> {
+      await new Promise((r) => setTimeout(r, 30));
+    }
+  }
+  const b = new Bridge({
+    storeDir: dir,
+    supervisorFactory: () => new SlowCloseSupervisor(),
+  });
+  const handle = await b.startSession({});
+
+  const closing = b.close(handle.id);
+  await new Promise((r) => setTimeout(r, 5));
+  await expect(b.interrupt(handle.id)).rejects.toThrow(/closing/);
+  await closing;
+});
+
+test("supervisor events with wrong sessionId are dropped and logged", async () => {
+  class WrongIdSupervisor implements Supervisor {
+    ctx: SupervisorContext | undefined;
+    async start(ctx: SupervisorContext): Promise<void> {
+      this.ctx = ctx;
+      ctx.emit({ type: "agent.progress", sessionId: "not-the-session", content: "leaked" });
+    }
+    async sendMessage(): Promise<void> {}
+    async interrupt(): Promise<void> {}
+    async close(): Promise<void> {}
+  }
+
+  const originalError = console.error;
+  let errorCalls = 0;
+  console.error = () => {
+    errorCalls++;
+  };
+  try {
+    const b = new Bridge({
+      storeDir: dir,
+      supervisorFactory: () => new WrongIdSupervisor(),
+    });
+    const handle = await b.startSession({});
+    await b.close(handle.id);
+
+    const stored = await b.readStoredEvents(handle.id);
+    expect(stored.find((e) => e.type === "agent.progress")).toBeUndefined();
+    expect(errorCalls).toBeGreaterThanOrEqual(1);
+  } finally {
+    console.error = originalError;
+  }
+});
