@@ -47,9 +47,19 @@ export interface BridgeOptions {
    * removed from the map and the bus/store closed. Defaults to 5000ms.
    */
   closeTimeoutMs?: number;
+  /**
+   * Upper bound for awaiting supervisor.start during Bridge.startSession. On
+   * timeout the bridge throws StartTimeoutError and runs the same failed-start
+   * cleanup path as a supervisor.start that rejects naturally (delete the
+   * session entry, drain pending appends, close the bus, close the store,
+   * remove the half-written JSONL file). The bound applies to supervisor.start
+   * only; subsequent supervisor calls are not affected. Defaults to 30000ms.
+   */
+  startTimeoutMs?: number;
 }
 
 const DEFAULT_CLOSE_TIMEOUT_MS = 5_000;
+const DEFAULT_START_TIMEOUT_MS = 30_000;
 const STORE_ERROR_THRESHOLD = 3;
 
 type SessionState = "starting" | "open" | "closing" | "closed";
@@ -91,12 +101,14 @@ export class Bridge implements ClaudeCodeBridge {
   readonly #supervisorFactory: SupervisorFactory;
   readonly #storeFactory: StoreFactory;
   readonly #closeTimeoutMs: number;
+  readonly #startTimeoutMs: number;
 
   constructor(options: BridgeOptions) {
     this.#storeDir = options.storeDir;
     this.#supervisorFactory = options.supervisorFactory;
     this.#storeFactory = options.storeFactory ?? ((_id, path) => new JsonlEventStore(path));
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
+    this.#startTimeoutMs = options.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS;
   }
 
   async startSession(_options: StartSessionOptions): Promise<SessionHandle> {
@@ -122,18 +134,32 @@ export class Bridge implements ClaudeCodeBridge {
       // Persist session.started before any supervisor-emitted event so the
       // store/bus ordering is "session.started leads."
       await this.#emitAwaited(session, { type: "session.started", sessionId: id });
-      await supervisor.start({
-        sessionId: id,
-        emit: (event) => {
-          this.#emitFromSupervisor(session, event);
-        },
-      });
+      await raceWithTimeout(
+        supervisor.start({
+          sessionId: id,
+          emit: (event) => {
+            this.#emitFromSupervisor(session, event);
+          },
+        }),
+        this.#startTimeoutMs,
+        "supervisor.start",
+        (label, ms) => new StartTimeoutError(label, ms),
+      );
       session.state = "open";
     } catch (err) {
       // Best-effort teardown of the partially-built session. Remove the
       // half-written JSONL file so a failed start does not leak state.
       this.#sessions.delete(id);
       session.state = "closed";
+      // Release any resources the supervisor allocated before its start
+      // rejected (or before the start timeout fired). Bounded by closeTimeoutMs
+      // so a wedged close cannot replace a wedged start.
+      await raceWithTimeout(
+        supervisor.close(id),
+        this.#closeTimeoutMs,
+        "supervisor.close",
+        (label, ms) => new CloseTimeoutError(label, ms),
+      ).catch(() => undefined);
       // Drain any supervisor-emitted appends that happened before the throw
       // so store.close doesn't race with in-flight writes.
       if (session.pending.size > 0) {
@@ -215,6 +241,7 @@ export class Bridge implements ClaudeCodeBridge {
           session.supervisor.close(sessionId),
           this.#closeTimeoutMs,
           "supervisor.close",
+          (label, ms) => new CloseTimeoutError(label, ms),
         );
       } catch (err) {
         if (err instanceof CloseTimeoutError) {
@@ -354,14 +381,26 @@ class CloseTimeoutError extends Error {
   }
 }
 
-function raceWithTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+export class StartTimeoutError extends Error {
+  constructor(label: string, timeoutMs: number) {
+    super(`${label} timed out after ${timeoutMs}ms`);
+    this.name = "StartTimeoutError";
+  }
+}
+
+function raceWithTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+  makeError: (label: string, timeoutMs: number) => Error,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let settled = false;
   const timeoutPromise = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new CloseTimeoutError(label, timeoutMs));
+      reject(makeError(label, timeoutMs));
     }, timeoutMs);
     timer.unref?.();
   });

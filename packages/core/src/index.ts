@@ -1,4 +1,9 @@
-export { Bridge, type BridgeOptions, type SupervisorFactory } from "./bridge.ts";
+export {
+  Bridge,
+  type BridgeOptions,
+  StartTimeoutError,
+  type SupervisorFactory,
+} from "./bridge.ts";
 export { EventBus } from "./bus.ts";
 export {
   CRASH_AGENT_DONE_REASON,
