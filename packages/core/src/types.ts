@@ -7,7 +7,7 @@ export type SendOptions = Record<string, never>;
 export interface EventsOptions {
   /**
    * Reserved for replay-from-cursor support backed by the JSONL store.
-   * Ignored in M1; events(sessionId) is a live tail from subscribe-time forward.
+   * Currently ignored; events(sessionId) is a live tail from subscribe-time forward.
    */
   since?: number;
 }
