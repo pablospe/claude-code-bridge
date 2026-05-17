@@ -21,12 +21,20 @@ const samples: ReadonlyArray<{ name: string; event: BridgeEvent }> = [
     event: { type: "agent.reply", sessionId: "s1", content: "partial", final: false },
   },
   {
-    name: "agent.done no reason",
+    name: "agent.done no fields",
     event: { type: "agent.done", sessionId: "s1" },
   },
   {
-    name: "agent.done with reason",
+    name: "agent.done messageId only",
+    event: { type: "agent.done", sessionId: "s1", messageId: "m1" },
+  },
+  {
+    name: "agent.done reason only",
     event: { type: "agent.done", sessionId: "s1", reason: "complete" },
+  },
+  {
+    name: "agent.done messageId and reason",
+    event: { type: "agent.done", sessionId: "s1", messageId: "m1", reason: "complete" },
   },
   {
     name: "agent.input_requested",
@@ -86,9 +94,15 @@ test("formatPretty produces the expected human-readable shapes", () => {
     formatPretty({ type: "agent.reply", sessionId: "s1", content: "partial", final: false }),
   ).toBe('[agent.reply final=false] "partial"');
   expect(formatPretty({ type: "agent.done", sessionId: "s1" })).toBe("[agent.done]");
+  expect(formatPretty({ type: "agent.done", sessionId: "s1", messageId: "m1" })).toBe(
+    "[agent.done] m1",
+  );
   expect(formatPretty({ type: "agent.done", sessionId: "s1", reason: "complete" })).toBe(
     "[agent.done] reason=complete",
   );
+  expect(
+    formatPretty({ type: "agent.done", sessionId: "s1", messageId: "m1", reason: "complete" }),
+  ).toBe("[agent.done] m1 reason=complete");
   expect(
     formatPretty({
       type: "agent.input_requested",

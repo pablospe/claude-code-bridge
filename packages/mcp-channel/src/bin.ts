@@ -2,17 +2,18 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createChannelServer } from "./channel-server.ts";
 import { ControlClient } from "./control.ts";
+import { drainWritable } from "./drain.ts";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const SHUTDOWN_BUDGET_MS = 1_500;
+const DRAIN_TIMEOUT_MS = 200;
 
 async function drainStdout(): Promise<void> {
   // The MCP transport writes JSON-RPC frames to stdout. A bare process.exit
   // can truncate the last frame before claude reads it. Wait for the empty
-  // write callback so the kernel has flushed.
-  await new Promise<void>((resolve) => {
-    process.stdout.write("", () => resolve());
-  });
+  // write callback so the kernel has flushed. Bounded by DRAIN_TIMEOUT_MS so
+  // an orphaned or wedged stdout cannot defeat SHUTDOWN_BUDGET_MS.
+  await drainWritable(process.stdout, DRAIN_TIMEOUT_MS);
 }
 
 async function main(): Promise<void> {
@@ -71,8 +72,10 @@ async function main(): Promise<void> {
     } catch {
       // best effort
     }
-    clearTimeout(budget);
     process.exitCode = code;
+    // Leave the budget timer armed; it is unref'd so it won't block exit on
+    // the happy path. Clearing it before drainStdout would let a wedged
+    // stdout defeat the hard-stop.
     await drainStdout();
     process.exit();
   };

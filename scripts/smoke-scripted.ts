@@ -9,7 +9,7 @@
 //      stderr line
 //   4. spawns `claude --dangerously-load-development-channels server:ccb
 //      --mcp-config <file>` and pipes a single user prompt to its stdin
-//   5. watches the bridge serve stdout for an agent.reply event
+//   5. watches the bridge serve stdout for an agent.reply or agent.done event
 //   6. exits 0 on success, 1 on failure, 0 (with a notice) when claude refuses
 //      to boot headlessly (claude needs a TTY per the bridge's own findings)
 //
@@ -131,7 +131,7 @@ async function main(): Promise<void> {
 
   const replyDeferred = deferred<string>();
   const replyTimer = setTimeout(() => {
-    replyDeferred.reject(new Error("timeout waiting for agent.reply"));
+    replyDeferred.reject(new Error("timeout waiting for agent.reply or agent.done"));
   }, REPLY_TIMEOUT_MS);
 
   const stdoutWatch = readUntil(
@@ -140,7 +140,9 @@ async function main(): Promise<void> {
       if (line.length === 0) return false;
       try {
         const ev = JSON.parse(line) as { type?: string };
-        if (ev.type === "agent.reply") {
+        // A turn can legally end with bridge_done only, so agent.done is also
+        // a valid terminator.
+        if (ev.type === "agent.reply" || ev.type === "agent.done") {
           replyDeferred.resolve(line);
           return true;
         }
@@ -201,10 +203,10 @@ async function main(): Promise<void> {
   try {
     await Promise.race([
       replyDeferred.promise.then((line) => {
-        process.stderr.write(`smoke-scripted: observed agent.reply: ${line}\n`);
+        process.stderr.write(`smoke-scripted: observed terminator: ${line}\n`);
       }),
       claudeExitPromise.then(() => {
-        throw new Error("claude exited before agent.reply was seen");
+        throw new Error("claude exited before agent.reply or agent.done was seen");
       }),
     ]);
   } catch (err) {

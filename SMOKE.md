@@ -62,9 +62,9 @@ Copy the exact `claude` command the script printed and run it. `claude` will spa
 
 Inside `claude`, ask something that exercises the bridge tools. The channel server installs three tools — `bridge_reply`, `bridge_progress`, `bridge_done` — and the channel-server `instructions` tell `claude` when to call each one.
 
-### Terminal 1 — exercise the inbound channel
+### Terminal 1 (after claude is up) — exercise the inbound channel
 
-After `claude` is up and the channel server has connected, type a line of text in Terminal 1 (where `ccb serve` is running) and press enter. The bridge reads stdin line-by-line and forwards each line through the control connection as a `notifications/claude/channel` envelope. Without this step the smoke only exercises the outbound (`bridge_reply` / `bridge_progress` / `bridge_done`) half.
+Switch back to Terminal 1 (the one running `ccb serve`). With `claude` running in Terminal 2 and the channel server connected, type a line of text in Terminal 1 and press enter. The bridge reads stdin line-by-line and forwards each line through the control connection as a `notifications/claude/channel` envelope. Without this step the smoke only exercises the outbound (`bridge_reply` / `bridge_progress` / `bridge_done`) half.
 
 ### Terminal 3 (optional) — inspect the JSONL log
 

@@ -18,8 +18,12 @@ export const formatPretty: Formatter = (event) => {
       return event.messageId !== undefined
         ? `[agent.reply final=${event.final}] ${event.messageId} ${JSON.stringify(event.content)}`
         : `[agent.reply final=${event.final}] ${JSON.stringify(event.content)}`;
-    case "agent.done":
-      return event.reason !== undefined ? `[agent.done] reason=${event.reason}` : "[agent.done]";
+    case "agent.done": {
+      const parts: string[] = [];
+      if (event.messageId !== undefined) parts.push(event.messageId);
+      if (event.reason !== undefined) parts.push(`reason=${event.reason}`);
+      return parts.length === 0 ? "[agent.done]" : `[agent.done] ${parts.join(" ")}`;
+    }
     case "agent.input_requested":
       return `[agent.input_requested] ${event.requestId} ${JSON.stringify(event.prompt)}`;
     case "tool.event":
