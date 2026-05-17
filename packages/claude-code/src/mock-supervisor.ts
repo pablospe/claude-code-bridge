@@ -1,4 +1,9 @@
-import type { BridgeEvent, Supervisor, SupervisorContext, SupervisorFactory } from "@ccb/core";
+import {
+  dispatchBridgeTool,
+  type Supervisor,
+  type SupervisorContext,
+  type SupervisorFactory,
+} from "@ccb/core";
 import {
   type ChannelServerHandle,
   ControlClient,
@@ -165,37 +170,7 @@ export class MockSupervisor implements Supervisor {
   #dispatchTool(name: string, args: Record<string, unknown>): void {
     const ctx = this.#ctx;
     if (!ctx) return;
-    const sessionId = ctx.sessionId;
-    if (name === "bridge_reply") {
-      const content = args.content;
-      const final = args.final;
-      if (typeof content !== "string" || typeof final !== "boolean") return;
-      const event: BridgeEvent = {
-        type: "agent.reply",
-        sessionId,
-        content,
-        final,
-        ...(typeof args.messageId === "string" ? { messageId: args.messageId } : {}),
-      };
-      ctx.emit(event);
-      return;
-    }
-    if (name === "bridge_progress") {
-      const content = args.content;
-      if (typeof content !== "string") return;
-      const event: BridgeEvent = {
-        type: "agent.progress",
-        sessionId,
-        content,
-        ...(typeof args.messageId === "string" ? { messageId: args.messageId } : {}),
-      };
-      ctx.emit(event);
-      return;
-    }
-    if (name === "bridge_done") {
-      // no bridge event; Bridge.close handles session.ended
-      return;
-    }
+    dispatchBridgeTool(ctx, name, args);
   }
 }
 

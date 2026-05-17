@@ -14,6 +14,8 @@ export const formatPretty: Formatter = (event) => {
       return `[agent.progress] ${JSON.stringify(event.content)}`;
     case "agent.reply":
       return `[agent.reply final=${event.final}] ${JSON.stringify(event.content)}`;
+    case "agent.done":
+      return event.reason !== undefined ? `[agent.done] reason=${event.reason}` : "[agent.done]";
     case "agent.input_requested":
       return `[agent.input_requested] ${event.requestId} ${JSON.stringify(event.prompt)}`;
     case "tool.event":

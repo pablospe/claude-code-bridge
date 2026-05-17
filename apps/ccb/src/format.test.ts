@@ -21,6 +21,14 @@ const samples: ReadonlyArray<{ name: string; event: BridgeEvent }> = [
     event: { type: "agent.reply", sessionId: "s1", content: "partial", final: false },
   },
   {
+    name: "agent.done no reason",
+    event: { type: "agent.done", sessionId: "s1" },
+  },
+  {
+    name: "agent.done with reason",
+    event: { type: "agent.done", sessionId: "s1", reason: "complete" },
+  },
+  {
     name: "agent.input_requested",
     event: { type: "agent.input_requested", sessionId: "s1", requestId: "r1", prompt: "name?" },
   },
@@ -60,6 +68,10 @@ test("formatPretty produces the expected human-readable shapes", () => {
   expect(
     formatPretty({ type: "agent.reply", sessionId: "s1", content: "partial", final: false }),
   ).toBe('[agent.reply final=false] "partial"');
+  expect(formatPretty({ type: "agent.done", sessionId: "s1" })).toBe("[agent.done]");
+  expect(formatPretty({ type: "agent.done", sessionId: "s1", reason: "complete" })).toBe(
+    "[agent.done] reason=complete",
+  );
   expect(
     formatPretty({
       type: "agent.input_requested",

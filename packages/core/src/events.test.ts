@@ -11,6 +11,8 @@ function describeEvent(event: BridgeEvent): string {
       return `progress:${event.sessionId}:${event.content}`;
     case "agent.reply":
       return `reply:${event.sessionId}:${event.content}:${String(event.final)}`;
+    case "agent.done":
+      return `done:${event.sessionId}:${event.reason ?? ""}`;
     case "agent.input_requested":
       return `input:${event.sessionId}:${event.requestId}:${event.prompt}`;
     case "tool.event":
@@ -30,13 +32,14 @@ test("BridgeEvent discriminated union is exhaustive over type", () => {
     { type: "message.sent", sessionId: "s1", messageId: "m1", content: "hi" },
     { type: "agent.progress", sessionId: "s1", content: "thinking" },
     { type: "agent.reply", sessionId: "s1", content: "ok", final: true },
+    { type: "agent.done", sessionId: "s1", reason: "complete" },
     { type: "agent.input_requested", sessionId: "s1", requestId: "r1", prompt: "name?" },
     { type: "tool.event", sessionId: "s1", payload: { name: "x" } },
     { type: "session.ended", sessionId: "s1", reason: "done" },
   ];
 
   const out = events.map(describeEvent);
-  expect(out).toHaveLength(7);
+  expect(out).toHaveLength(8);
   expect(out[0]).toBe("started:s1");
   expect(out[3]).toBe("reply:s1:ok:true");
 });

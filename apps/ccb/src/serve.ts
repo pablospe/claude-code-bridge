@@ -1,4 +1,10 @@
-import { Bridge, type BridgeEvent, type Supervisor, type SupervisorContext } from "@ccb/core";
+import {
+  Bridge,
+  type BridgeEvent,
+  dispatchBridgeTool,
+  type Supervisor,
+  type SupervisorContext,
+} from "@ccb/core";
 import { ControlServer } from "@ccb/mcp-channel";
 import { formatJson, formatPretty } from "./format.ts";
 
@@ -123,38 +129,7 @@ class ServeSupervisor implements Supervisor {
   #dispatchTool(name: string, args: Record<string, unknown>): void {
     const ctx = this.#ctx;
     if (!ctx) return;
-    const sessionId = ctx.sessionId;
-    if (name === "bridge_reply") {
-      const content = args.content;
-      const final = args.final;
-      if (typeof content !== "string" || typeof final !== "boolean") return;
-      const event: BridgeEvent = {
-        type: "agent.reply",
-        sessionId,
-        content,
-        final,
-        ...(typeof args.messageId === "string" ? { messageId: args.messageId } : {}),
-      };
-      ctx.emit(event);
-      return;
-    }
-    if (name === "bridge_progress") {
-      const content = args.content;
-      if (typeof content !== "string") return;
-      const event: BridgeEvent = {
-        type: "agent.progress",
-        sessionId,
-        content,
-        ...(typeof args.messageId === "string" ? { messageId: args.messageId } : {}),
-      };
-      ctx.emit(event);
-      return;
-    }
-    if (name === "bridge_done") {
-      // turn end; no bridge event emitted. Bridge.close drives session.ended
-      // when the human decides to shut down (SIGINT) or the abort signal fires.
-      return;
-    }
+    dispatchBridgeTool(ctx, name, args);
   }
 }
 

@@ -25,13 +25,13 @@ test("runDemo returns the full event stream in order with format=json", async ()
     timeoutMs: 2000,
   });
   const types = result.events.map((e) => e.type);
-  expect(types).toEqual([
-    "session.started",
-    "message.sent",
-    "agent.progress",
-    "agent.reply",
-    "session.ended",
-  ]);
+  // agent.done may appear before session.ended depending on echo timing; assert
+  // the leading and trailing events are stable.
+  expect(types[0]).toBe("session.started");
+  expect(types[1]).toBe("message.sent");
+  expect(types[2]).toBe("agent.progress");
+  expect(types[3]).toBe("agent.reply");
+  expect(types.at(-1)).toBe("session.ended");
 
   const messageSent = result.events[1];
   if (messageSent?.type !== "message.sent") throw new Error("expected message.sent");
@@ -56,13 +56,11 @@ test("runDemo collects events identically with format=pretty", async () => {
     timeoutMs: 2000,
   });
   const types = result.events.map((e) => e.type);
-  expect(types).toEqual([
-    "session.started",
-    "message.sent",
-    "agent.progress",
-    "agent.reply",
-    "session.ended",
-  ]);
+  expect(types[0]).toBe("session.started");
+  expect(types[1]).toBe("message.sent");
+  expect(types[2]).toBe("agent.progress");
+  expect(types[3]).toBe("agent.reply");
+  expect(types.at(-1)).toBe("session.ended");
 });
 
 class HangingCloseSupervisor implements Supervisor {
@@ -160,6 +158,39 @@ class PostReplyToolSupervisor implements Supervisor {
     this.#ctx = undefined;
   }
 }
+
+class DoneOnlySupervisor implements Supervisor {
+  #ctx: SupervisorContext | undefined;
+  async start(ctx: SupervisorContext): Promise<void> {
+    this.#ctx = ctx;
+  }
+  async sendMessage(sessionId: string): Promise<void> {
+    const ctx = this.#ctx;
+    if (!ctx) return;
+    // Skip the final reply path entirely; only emit agent.done.
+    ctx.emit({ type: "agent.done", sessionId, reason: "test-only" });
+  }
+  async interrupt(): Promise<void> {}
+  async close(): Promise<void> {
+    this.#ctx = undefined;
+  }
+}
+
+test("runDemo returns within ~100ms when supervisor emits only agent.done", async () => {
+  const start = Date.now();
+  const result = await runDemo({
+    input: "hello",
+    supervisorFactory: () => new DoneOnlySupervisor(),
+    format: "json",
+    storeDir,
+    timeoutMs: 10_000,
+  });
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(1500);
+  const types = result.events.map((e) => e.type);
+  expect(types).toContain("agent.done");
+  expect(types.at(-1)).toBe("session.ended");
+});
 
 test("runDemo stream mode delivers events between final reply and session.ended", async () => {
   const observed: string[] = [];

@@ -9,6 +9,7 @@ export type BridgeEvent =
       content: string;
       final: boolean;
     }
+  | { type: "agent.done"; sessionId: string; messageId?: string; reason?: string }
   | { type: "agent.input_requested"; sessionId: string; requestId: string; prompt: string }
   | { type: "tool.event"; sessionId: string; payload: unknown }
   | { type: "session.ended"; sessionId: string; reason?: string };

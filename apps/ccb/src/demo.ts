@@ -85,6 +85,9 @@ export async function runDemo(opts: DemoOptions): Promise<DemoResult> {
       if (ev.type === "agent.reply" && ev.final) {
         triggerClose();
       }
+      if (ev.type === "agent.done") {
+        triggerClose();
+      }
       if (ev.type === "session.ended") {
         break;
       }
