@@ -238,6 +238,29 @@ test("kill('signal') sends SIGTERM without writing any bytes", async () => {
   expect(exit.code !== 0 || exit.signal !== undefined).toBe(true);
 });
 
+test("sendSignal delivers a single SIGINT without escalation", async () => {
+  // Child runs sleep; the launcher signals it with SIGINT. No ladder, no
+  // waiting — just one signal. We confirm the child terminated after a
+  // bounded wait.
+  const handle = launch("bash", ["-c", "sleep 10"]);
+  handle.sendSignal("SIGINT");
+  // Race waitExit against a 1.5s timeout; SIGINT should terminate the child
+  // well within that window.
+  const exit = await Promise.race([
+    handle.waitExit(),
+    new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 1500)),
+  ]);
+  expect(exit).toBeDefined();
+});
+
+test("sendSignal is a no-op after the child exits", async () => {
+  const handle = launch("bash", ["-c", "exit 0"]);
+  await handle.waitExit();
+  // Must not throw.
+  handle.sendSignal("SIGINT");
+  handle.sendSignal("SIGTERM");
+});
+
 test("kill is a no-op once the child has already exited", async () => {
   const handle = launch("bash", ["-c", "exit 0"]);
   await handle.waitExit();

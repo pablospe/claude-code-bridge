@@ -39,6 +39,12 @@ export interface LauncherHandle {
   readonly pid: number;
   write(data: string): void;
   kill(mode: "graceful" | "signal", opts?: KillOpts): Promise<void>;
+  /**
+   * Deliver a single POSIX signal to the child without escalation. Used by
+   * supervisors that need a Ctrl-C analog ("SIGINT") distinct from the
+   * SIGTERM-first behavior of `kill("signal")`. No-op after exit.
+   */
+  sendSignal(signal: NodeJS.Signals): void;
   waitExit(): Promise<{ code: number; signal?: string }>;
   onData(cb: (chunk: string) => void): () => void;
   onExit(cb: (exit: { code: number; signal?: string }) => void): () => void;
@@ -166,6 +172,10 @@ export function launch(command: string, args: string[], opts?: LaunchOpts): Laun
     write(data) {
       if (exit) return;
       term.write(data);
+    },
+    sendSignal(signal) {
+      if (exit) return;
+      safeKill(term, signal);
     },
     onData(cb) {
       dataListeners.add(cb);
