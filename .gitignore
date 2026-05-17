@@ -11,6 +11,9 @@ dist/
 .ccb-data/
 *.log
 
+# claude code personal overlay (auto-written by `claude` on permission approvals)
+.claude/settings.local.json
+
 # editor / OS
 .DS_Store
 .idea/
