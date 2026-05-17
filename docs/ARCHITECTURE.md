@@ -128,6 +128,37 @@ tools come out; the JSONL event log is the durable record.
 |   |   | `claude --print --output-format stream-json` | one-shot; loses interactive state |
 |   |   | Claude Agent SDK | re-spawns the model context |
 
+## Using the library
+
+```ts
+import { Bridge } from "@ccb/core";
+import { mockSupervisorFactory } from "@ccb/claude-code";
+
+const bridge = new Bridge({
+  storeDir: ".ccb-data",
+  supervisorFactory: mockSupervisorFactory(),
+});
+const { id } = await bridge.startSession({});
+const events = bridge.events(id);
+await bridge.sendMessage(id, "hello world");
+for await (const ev of events) {
+  console.log(ev);
+  if (ev.type === "agent.reply" && ev.final) break;
+}
+await bridge.close(id);
+```
+
+Swap `mockSupervisorFactory()` for a real `Supervisor` implementation to drive a real `claude`
+process. The four packages that make up this surface:
+
+- `packages/core` (`@ccb/core`) — `Bridge` facade, `EventBus`, `JsonlEventStore`, `Supervisor`
+  interface, public types.
+- `packages/mcp-channel` (`@ccb/mcp-channel`) — MCP channel server, control server/client,
+  `ccb-channel-server` stdio binary.
+- `packages/claude-code` (`@ccb/claude-code`) — `MockSupervisor`, `generateMcpConfig`, and the
+  `ClaudeCodeSupervisor` managed-launch stub.
+- `apps/ccb` (`@ccb/cli`) — developer CLI (`demo`, `mcp-config`, `serve`).
+
 ## Channel direction notes
 
 "Channels" describes the inbound MCP notification mechanism. The general-content direction
