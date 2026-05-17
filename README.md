@@ -37,7 +37,7 @@ See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full design, proces
 
 ## Status
 
-The protocol shape works end-to-end against an in-process mock plus a documented manual smoke against real `claude`. Managed launch (the bridge spawning `claude` itself) is on the [roadmap](./docs/ROADMAP.md).
+The protocol shape works end-to-end against an in-process mock and against a real `claude` driven by the bridge's managed launch (the bridge spawns and supervises `claude` itself via `node-pty`; requires `node-pty` to build/load on the host). The earlier three-terminal manual smoke is preserved as a fallback for hosts where `node-pty` cannot load.
 
 ## Quick start
 
@@ -59,7 +59,23 @@ Expected (UUIDs vary):
 [session.ended]
 ```
 
-That runs the mock supervisor end-to-end with no external processes. For the real-`claude` smoke procedure (three terminals, with or without a plugin install), see [`docs/SMOKE.md`](./docs/SMOKE.md).
+That runs the mock supervisor end-to-end with no external processes. To drive a real `claude` in one command, opt into managed launch:
+
+```bash
+bun apps/ccb/src/cli.ts demo --supervisor=claude "ping"
+```
+
+Expected (UUIDs vary):
+
+```text
+[session.started] 4f3b6e10-...
+[message.sent] 2b8c1f70-... "ping"
+[agent.progress] "..."
+[agent.reply final=true] "..."
+[session.ended]
+```
+
+For the full real-`claude` walkthrough — managed launch, plugin install, and the three-terminal manual fallback — see [`docs/SMOKE.md`](./docs/SMOKE.md).
 
 ## Requirements
 

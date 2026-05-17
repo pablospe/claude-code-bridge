@@ -7,7 +7,7 @@ This is the durable entry point for the project's milestone documentation. Indiv
 | ID | Status      | Doc                            | Summary                                                                                                                          |
 | -- | ----------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
 | M1 | shipped     | [M1.md](./M1.md)               | Protocol shape end-to-end: channels-in / MCP-tools-out, JSONL store, `MockSupervisor`, `ccb` CLI, manual real-claude smoke.      |
-| M2 | planned     | [M2.md](./M2.md)               | Managed launch: bridge spawns `claude` itself via `node-pty`, supervisor-crash event emission, start timeout, plugin packaging.  |
+| M2 | shipped     | [M2.md](./M2.md)               | Managed launch: bridge spawns `claude` itself via `node-pty`, supervisor-crash event emission, start timeout, plugin packaging.  |
 | M3 | proposal    | [M3.md](./M3.md)               | Hook-relayed visibility: `PreToolUse` / `PostToolUse` / `Stop` / lifecycle events surfaced as `BridgeEvent`s for richer UIs.     |
 
 ## Possible later work (consumer-demand-gated)

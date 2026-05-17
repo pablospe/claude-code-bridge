@@ -156,7 +156,7 @@ process. The four packages that make up this surface:
 - `packages/mcp-channel` (`@ccb/mcp-channel`) — MCP channel server, control server/client,
   `ccb-channel-server` stdio binary.
 - `packages/claude-code` (`@ccb/claude-code`) — `MockSupervisor`, `generateMcpConfig`, and the
-  `ClaudeCodeSupervisor` managed-launch stub.
+  `ClaudeCodeSupervisor` managed-launch implementation.
 - `apps/ccb` (`@ccb/cli`) — developer CLI (`demo`, `mcp-config`, `serve`).
 
 ## Channel direction notes

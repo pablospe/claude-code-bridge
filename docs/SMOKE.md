@@ -1,8 +1,25 @@
 # Real Claude Code Smoke Procedure
 
-This document describes how to verify the end-to-end Claude Code Bridge loop against a real `claude` process. The automated test track in `bun test` covers the protocol shape via the `MockSupervisor`; this document covers the manual real-claude track.
+This document describes how to verify the end-to-end Claude Code Bridge loop against a real `claude` process. The automated test track in `bun test` covers the protocol shape via the `MockSupervisor`; this document covers the real-claude track.
 
-Managed launch (the bridge spawning `claude` itself via node-pty) is on the [roadmap](./ROADMAP.md) and not yet implemented. Until that lands, the human starts `claude` in a second terminal and the bridge runs in the foreground of the first.
+Managed launch is the primary path: the bridge spawns and supervises `claude` itself via `node-pty`, so a single command drives one terminal end-to-end. The three-terminal manual procedure is preserved as a fallback for hosts where `node-pty` cannot build/load.
+
+## Managed launch (recommended)
+
+One command, one terminal, no human in the loop beyond `claude` already being authenticated:
+
+```bash
+bun apps/ccb/src/cli.ts demo --supervisor=claude --channels=dev-flag "your prompt"
+```
+
+This selects the `ClaudeCodeSupervisor`, which:
+
+- Spawns `claude` under `node-pty` (the boot-time TTY check is what makes the PTY necessary).
+- Generates a per-session `.mcp.json`, passes it via `--mcp-config`, and cleans up on close.
+- In `--channels=dev-flag` mode, runs `claude --dangerously-load-development-channels server:ccb` and auto-confirms the boot warning. Use `--channels=plugin` once you have installed the local plugin (see "Installing as a plugin" below) to avoid the warning entirely.
+- Reaps the spawned `claude` on `bridge.close()`; no orphan processes survive a clean shutdown.
+
+Preconditions: `claude` on `PATH`, already authenticated (`claude login` at least once), and channels available to your account (see "Channels availability gate" below). If `node-pty` fails to load on the host, the supervisor throws `LauncherUnavailableError` and you should use the manual fallback below.
 
 ## Prerequisites
 
@@ -11,7 +28,9 @@ Managed launch (the bridge spawning `claude` itself via node-pty) is on the [roa
 - Channels are a Claude Code research-preview feature. `claude` must be launched with `--dangerously-load-development-channels server:ccb` for the bridge channel to be exposed; this flag will not be required forever, but it is required during the preview window.
 - A real terminal. The `claude` boot path checks for a TTY on stdout and bails to `--print` mode otherwise (verified empirically by the bridge research). There is no fully-headless scripted variant for this reason.
 
-## Manual procedure (three terminals)
+## Manual fallback: three-terminal procedure
+
+The procedure below is the fallback for hosts where `node-pty` cannot build or load (managed launch raises `LauncherUnavailableError` in that case). It is also the original M1 verification path and is preserved verbatim.
 
 The helper `scripts/smoke-manual.sh` mints a session id, writes the per-session `.mcp.json`, prints the exact command to run in the other terminal, and then hosts the bridge in the foreground.
 
@@ -136,7 +155,7 @@ Expected outcome:
 
 - No `--dangerously-load-development-channels` flag and no startup warning prompt about loading development channels.
 - The channel server is spawned by `claude` from the plugin manifest's `mcpServers.ccb` entry, which runs `bun ${CLAUDE_PROJECT_DIR}/packages/mcp-channel/src/bin.ts`.
-- The bridge (`scripts/smoke-manual.sh` in another terminal, or `ccb serve` directly) still owns the control endpoint. The plugin manifest declares `CCB_BRIDGE_ENDPOINT` and `CCB_SESSION_ID` as env keys; the bridge populates them at session start by injecting overrides into the spawn (or via `extraKnownMarketplaces` / `pluginConfigs` settings when managed launch lands; see the [roadmap](./ROADMAP.md)).
+- The bridge (`scripts/smoke-manual.sh` in another terminal, `ccb serve` directly, or the managed-launch supervisor in the single-command path) still owns the control endpoint. The plugin manifest declares `CCB_BRIDGE_ENDPOINT` and `CCB_SESSION_ID` as env keys; the bridge populates them at session start by injecting overrides into the spawn.
 - All other gating still applies: `tengu_harbor` must be enabled server-side and channels must be available to your account (see "Channels availability gate" below).
 
 The `--dangerously-load-development-channels server:ccb` path described above stays supported as a fallback for users who do not want to install the plugin.
@@ -149,12 +168,12 @@ The `--dangerously-load-development-channels server:ccb` path described above st
 CCB_RUN_REAL_CLAUDE=1 bun scripts/smoke-scripted.ts
 ```
 
-Do not depend on this in CI without a PTY surrogate. The intent is to give a single-command path for local experimentation; production-grade automation will arrive with managed launch (see the [roadmap](./ROADMAP.md)).
+Do not depend on this in CI without a PTY surrogate. The intent is to give a single-command path for local experimentation; the supported single-command path for real `claude` is managed launch (`bun apps/ccb/src/cli.ts demo --supervisor=claude "..."`).
 
 ## Known limitations
 
-- **Managed launch not yet implemented.** The bridge does not spawn `claude` itself; the tracked work is to wrap `claude` in `node-pty` so its boot-time TTY check passes while keeping reply/progress data off the PTY. See [ROADMAP.md](./ROADMAP.md).
-- **TTY requirement.** Because `claude` exits to `--print` mode when stdout is not a TTY, there is no fully automated scripted smoke. The scripted variant above is best-effort only.
+- **Managed launch requires `node-pty`.** The supervisor wraps `claude` in `node-pty` to satisfy its boot-time TTY check while keeping reply/progress data off the PTY. If `node-pty` cannot build/load on the host, `ClaudeCodeSupervisor.start` throws `LauncherUnavailableError` and the three-terminal fallback above is the supported path.
+- **TTY requirement.** Because `claude` exits to `--print` mode when stdout is not a TTY, the scripted smoke that does not use the managed-launch PTY is best-effort only. Managed launch resolves this end-to-end.
 - **Research-preview channels.** The `--dangerously-load-development-channels server:ccb` flag is required during the channels research preview. Once `claude/channel` is on the approved allowlist, that flag will no longer be needed.
 - **Bridge UUID vs wire UUID.** The `--session-id` flag is the wire id the channel server speaks to the bridge with. The bridge mints its own internal UUID for events and the JSONL store. They are intentionally independent.
 
