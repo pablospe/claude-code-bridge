@@ -1,0 +1,14 @@
+{
+  "name": "ccb-local",
+  "description": "Local marketplace exposing the ccb plugin from this workspace.",
+  "owner": {
+    "name": "claude-code-bridge"
+  },
+  "plugins": [
+    {
+      "name": "ccb",
+      "source": "./plugins/ccb",
+      "description": "Bridge that drives interactive Claude Code sessions from external UIs; channel surface for the @ccb stack."
+    }
+  ]
+}
