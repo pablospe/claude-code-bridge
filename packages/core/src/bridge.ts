@@ -81,7 +81,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * because there is no second consumer of it. Spinning it out into a separate
  * class would be speculative.
  *
- * events(sessionId) is a live tail from subscribe-time forward in M1. The
+ * events(sessionId) is a live tail from subscribe-time forward. The
  * EventsOptions.since field is reserved for future replay-from-cursor support
  * and is currently ignored.
  */

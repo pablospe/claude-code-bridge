@@ -1,8 +1,8 @@
 # Real Claude Code Smoke Procedure
 
-This document describes how to verify the end-to-end Claude Code Bridge loop against a real `claude` process. The automated test track in `bun test` covers the protocol shape via the `MockSupervisor`; this document covers the manual real-claude track that was the second deliverable of Milestone 1.
+This document describes how to verify the end-to-end Claude Code Bridge loop against a real `claude` process. The automated test track in `bun test` covers the protocol shape via the `MockSupervisor`; this document covers the manual real-claude track.
 
-Managed launch (the bridge spawning `claude` itself via node-pty) is intentionally deferred. Until that lands, the human starts `claude` in a second terminal and the bridge runs in the foreground of the first.
+Managed launch (the bridge spawning `claude` itself via node-pty) is on the [roadmap](./ROADMAP.md) and not yet implemented. Until that lands, the human starts `claude` in a second terminal and the bridge runs in the foreground of the first.
 
 ## Prerequisites
 
@@ -136,7 +136,7 @@ Expected outcome:
 
 - No `--dangerously-load-development-channels` flag and no startup warning prompt about loading development channels.
 - The channel server is spawned by `claude` from the plugin manifest's `mcpServers.ccb` entry, which runs `bun ${CLAUDE_PROJECT_DIR}/packages/mcp-channel/src/bin.ts`.
-- The bridge (`scripts/smoke-manual.sh` in another terminal, or `ccb serve` directly) still owns the control endpoint. The plugin manifest declares `CCB_BRIDGE_ENDPOINT` and `CCB_SESSION_ID` as env keys; the bridge populates them at session start by injecting overrides into the spawn (or via `extraKnownMarketplaces` / `pluginConfigs` settings when integrated, post-M1).
+- The bridge (`scripts/smoke-manual.sh` in another terminal, or `ccb serve` directly) still owns the control endpoint. The plugin manifest declares `CCB_BRIDGE_ENDPOINT` and `CCB_SESSION_ID` as env keys; the bridge populates them at session start by injecting overrides into the spawn (or via `extraKnownMarketplaces` / `pluginConfigs` settings when managed launch lands; see the [roadmap](./ROADMAP.md)).
 - All other gating still applies: `tengu_harbor` must be enabled server-side and channels must be available to your account (see "Channels availability gate" below).
 
 The `--dangerously-load-development-channels server:ccb` path described above stays supported as a fallback for users who do not want to install the plugin.
@@ -149,11 +149,11 @@ The `--dangerously-load-development-channels server:ccb` path described above st
 CCB_RUN_REAL_CLAUDE=1 bun scripts/smoke-scripted.ts
 ```
 
-Do not depend on this in CI without a PTY surrogate. The intent is to give a single-command path for local experimentation; production-grade automation is what managed launch (post-M1) will deliver.
+Do not depend on this in CI without a PTY surrogate. The intent is to give a single-command path for local experimentation; production-grade automation will arrive with managed launch (see the [roadmap](./ROADMAP.md)).
 
 ## Known limitations
 
-- **Managed launch deferred.** The bridge does not spawn `claude` itself in M1. Tracking item for M2: wrap `claude` in `node-pty` so its boot-time TTY check passes while keeping reply/progress data off the PTY.
+- **Managed launch not yet implemented.** The bridge does not spawn `claude` itself; the tracked work is to wrap `claude` in `node-pty` so its boot-time TTY check passes while keeping reply/progress data off the PTY. See [ROADMAP.md](./ROADMAP.md).
 - **TTY requirement.** Because `claude` exits to `--print` mode when stdout is not a TTY, there is no fully automated scripted smoke. The scripted variant above is best-effort only.
 - **Research-preview channels.** The `--dangerously-load-development-channels server:ccb` flag is required during the channels research preview. Once `claude/channel` is on the approved allowlist, that flag will no longer be needed.
 - **Bridge UUID vs wire UUID.** The `--session-id` flag is the wire id the channel server speaks to the bridge with. The bridge mints its own internal UUID for events and the JSONL store. They are intentionally independent.

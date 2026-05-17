@@ -1,10 +1,10 @@
 # Claude Code Bridge
 
-A TypeScript library plus developer CLI for driving an interactive Claude Code session from an external UI or orchestrator. Inbound messages travel over a Claude Code channel (`notifications/claude/channel`), outbound replies/progress travel as MCP tool calls (`bridge_reply` / `bridge_progress` / `bridge_done`), and every turn is persisted as an append-only JSONL event log. This repo is not an ACPX replacement and not a universal agent runtime — it exists for the specific case of using an already authenticated interactive `claude` as the runtime. See [PLAN.md](./PLAN.md) for the full design.
+A TypeScript library plus developer CLI for driving an interactive Claude Code session from an external UI or orchestrator. Inbound messages travel over a Claude Code channel (`notifications/claude/channel`), outbound replies/progress travel as MCP tool calls (`bridge_reply` / `bridge_progress` / `bridge_done`), and every turn is persisted as an append-only JSONL event log. This repo is not an ACPX replacement and not a universal agent runtime — it exists for the specific case of using an already authenticated interactive `claude` as the runtime. See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for the conceptual overview and [docs/ROADMAP.md](./docs/ROADMAP.md) for upcoming work.
 
 ## Status
 
-Milestone 1 delivers the protocol shape end-to-end against an in-process mock plus a documented manual smoke against real `claude`.
+The protocol shape works end-to-end against an in-process mock and against real `claude` via a documented manual smoke procedure.
 
 Working:
 
@@ -12,9 +12,8 @@ Working:
 - MCP channel server with the `claude/channel` experimental capability and the `bridge_reply` / `bridge_progress` / `bridge_done` tools, a loopback TCP control transport, and a `ccb-channel-server` stdio binary (`@ccb/mcp-channel`).
 - `MockSupervisor` (in-process supervisor used by `ccb demo`) and `generateMcpConfig` (`@ccb/claude-code`).
 - `ccb` CLI with `demo`, `mcp-config`, and `serve` subcommands.
-- 127 unit and integration tests, plus `typecheck` and `lint` clean.
 
-Deferred to M2: managed launch of real `claude` (wrapping it in `node-pty` to satisfy its boot-time TTY check; `ClaudeCodeSupervisor` is a stub), HTTP/WebSocket adapter (`packages/http`), and ACP-compatible facade (`packages/acp`).
+Not yet shipped (tracked in [docs/ROADMAP.md](./docs/ROADMAP.md)): managed launch of real `claude` (the bridge spawning `claude` itself via `node-pty`; `ClaudeCodeSupervisor` is currently a stub), hook-relayed tool/lifecycle visibility for richer UIs, HTTP/WebSocket adapter, and ACP-compatible facade.
 
 ## Requirements
 
@@ -82,12 +81,12 @@ Hosts the bridge control endpoint and streams its event log to stdout. The chann
 
 ## Real Claude Code smoke
 
-The manual three-terminal walkthrough is documented in [SMOKE.md](./SMOKE.md). Two helpers wrap the steps:
+The manual three-terminal walkthrough is documented in [docs/SMOKE.md](./docs/SMOKE.md). Two helpers wrap the steps:
 
 - `scripts/smoke-manual.sh` — mints a session id, writes the per-session `.mcp.json`, prints the exact `claude` command to run in the second terminal, then hosts the bridge in the foreground.
 - `scripts/smoke-scripted.ts` — automates the outbound tool path only (claude needs a TTY so the inbound side isn't driven from the script). Gated on `CCB_RUN_REAL_CLAUDE=1` and skips with a notice when `claude` refuses to boot without a TTY.
 
-For users who plan to run ccb frequently, the [plugin install path documented in SMOKE.md](./SMOKE.md#installing-as-a-plugin-no-dev-flag-warning) is preferred: install `ccb@ccb-local` once and launch with `claude --channels plugin:ccb@ccb-local` (no `--dangerously-load-development-channels` flag, no startup warning).
+For users who plan to run ccb frequently, the [plugin install path documented in docs/SMOKE.md](./docs/SMOKE.md#installing-as-a-plugin-no-dev-flag-warning) is preferred: install `ccb@ccb-local` once and launch with `claude --channels plugin:ccb@ccb-local` (no `--dangerously-load-development-channels` flag, no startup warning).
 
 ## Architecture
 
@@ -103,7 +102,7 @@ ccb (bridge library + CLI)
               └─ local control connection back to bridge
 ```
 
-The bridge and the channel server are siblings under different parents and share a per-session loopback TCP control connection carrying a JSON-lines protocol. Inbound `deliver` frames become `notifications/claude/channel`; outbound MCP tool calls become `BridgeEvent`s on the bus and rows in the JSONL store. See [PLAN.md](./PLAN.md) for the full directional-communication discussion and the rationale for the topology.
+The bridge and the channel server are siblings under different parents and share a per-session loopback TCP control connection carrying a JSON-lines protocol. Inbound `deliver` frames become `notifications/claude/channel`; outbound MCP tool calls become `BridgeEvent`s on the bus and rows in the JSONL store. See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for the full directional-communication discussion and the rationale for the topology.
 
 ## Packages
 
@@ -139,7 +138,7 @@ Swap `mockSupervisorFactory()` for a real `Supervisor` implementation to drive a
 The working pattern is test-driven: every change ships with a test that exercises it. Common commands:
 
 ```bash
-bun test           # run the full test suite (currently 127 tests)
+bun test           # run the full test suite
 bun run typecheck  # tsc -b across the workspace
 bun run lint       # biome check
 bun run format     # biome format --write
@@ -149,12 +148,12 @@ To add a new package, create `packages/<name>/{package.json,src,tsconfig.json}` 
 
 ## Known limitations
 
-- Managed launch is deferred. The bridge does not spawn `claude` itself in M1; the human starts it in a second terminal.
+- Managed launch is not yet implemented. The bridge does not spawn `claude` itself; the human starts it in a second terminal. See [docs/ROADMAP.md](./docs/ROADMAP.md).
 - Channels are a Claude Code research-preview feature, so `--dangerously-load-development-channels server:ccb` is required until `claude/channel` is on the allowlist.
 - `claude` exits to `--print` mode when stdout is not a TTY, so there is no fully-headless automated test of the real path. `scripts/smoke-scripted.ts` is best-effort only.
 - `EventBus` is unbounded; slow consumers can grow the in-memory queue.
-- HTTP/WebSocket and ACP adapters are post-M1.
+- HTTP/WebSocket and ACP adapters are not part of the current scope. See [docs/ROADMAP.md](./docs/ROADMAP.md).
 
 ## License
 
-TBD.
+[MIT](./LICENSE).

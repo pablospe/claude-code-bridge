@@ -56,9 +56,9 @@ control connection.
 
 This split is forced by Claude Code's MCP model: MCP servers are stdio children of `claude`,
 not of the consumer. So the channel server cannot be embedded in the bridge process and the
-control connection is the only place the two sides meet. See `PLAN.md` for the envelope
-spec (`hello`, `hello_ack`, `deliver`, `tool`, `close`) and the rationale for loopback TCP over
-Unix sockets and named pipes.
+control connection is the only place the two sides meet. The envelope spec (`hello`,
+`hello_ack`, `deliver`, `tool`, `close`) and the rationale for loopback TCP over Unix sockets
+and named pipes live in [`packages/mcp-channel/src/control.ts`](../packages/mcp-channel/src/control.ts).
 
 ## How a turn flows
 
@@ -85,9 +85,9 @@ Unix sockets and named pipes.
 ## Why this shape
 
 The bridge's only job is to be a clean integration surface for an interactive `claude` that is
-already authenticated and running. Every alternative we considered for either direction either
+already authenticated and running. Every alternative considered for either direction either
 re-spawns the model context, scrapes the terminal, or reduces the session to a one-shot — all
-PLAN.md non-goals.
+explicit non-goals.
 
 `claude --print` runs a single non-interactive turn and exits. It loses tool state, session
 history, MCP server connections, and any prior context. It is fine for scripting one-off
@@ -95,7 +95,7 @@ prompts, but it cannot drive a long-lived interactive session, which is the whol
 
 Terminal scraping (tmux `capture-pane`, ANSI parsing) is brittle. It breaks every time the
 Claude Code UI changes, it has no semantic shape (a tool call and a paragraph of prose look
-identical to a regex), and it requires constant maintenance. PLAN.md rules it out.
+identical to a regex), and it requires constant maintenance. It is ruled out.
 
 The Claude Agent SDK is the wrong primitive: it spawns a new model context for each invocation
 rather than driving an existing one. The bridge wants to talk to an already-running, already-
@@ -112,7 +112,7 @@ tools come out; the JSONL event log is the durable record.
 | inbound (bridge -> claude) | `notifications/claude/channel` | PTY write to stdin | brittle; shows up as user typing |
 |   |   | spawn `claude --print` per turn | one-shot; loses interactive state |
 |   |   | Claude Agent SDK | re-spawns the model context |
-| outbound (claude -> bridge) | MCP tools `bridge_reply` / `bridge_progress` / `bridge_done` | terminal scraping / `capture-pane` | PLAN.md non-goal; breaks on UI changes |
+| outbound (claude -> bridge) | MCP tools `bridge_reply` / `bridge_progress` / `bridge_done` | terminal scraping / `capture-pane` | non-goal; breaks on UI changes |
 |   |   | `claude --print --output-format stream-json` | one-shot; loses interactive state |
 |   |   | Claude Agent SDK | re-spawns the model context |
 
@@ -129,27 +129,27 @@ things that channels + the three bridge tools don't carry on their own:
 Claude Code hooks (`PreToolUse`, `PostToolUse`, `Stop`, `SessionStart`, `UserPromptSubmit`, ...)
 are the natural extension point for the first three. The `tool.event` variant of
 `BridgeEvent` in `packages/core/src/events.ts` is reserved for hook-relayed payloads — it is
-currently dead code waiting for a wire-up task. Hook relay is a future-milestone candidate;
-the design space is sketched as M3 territory.
+currently dead code waiting for a wire-up task. Hook relay is a roadmap item; see
+[ROADMAP.md](./ROADMAP.md).
 
 Token-level streaming is not on the roadmap. Every available path to it (the Agent SDK,
-`--print --output-format stream-json`) re-violates the PLAN.md non-goals about the bridge not
-being the model API's consumer. Channels deliberately deliver complete messages, not tokens.
+`--print --output-format stream-json`) re-violates the bridge's non-goal of being the model
+API's consumer. Channels deliberately deliver complete messages, not tokens.
 
 ## Where to go next
 
-- `README.md` — install, run the demo, full CLI reference.
-- `PLAN.md` — full design, directional communication discussion, process topology, package
-  layout, original milestone 1 success criteria.
-- `SMOKE.md` — manual real-claude smoke walkthrough (three terminals plus the plugin install
-  variant).
-- `M2.md` — next milestone: managed launch, supervisor-crash event emission, robustness
-  fix-ups.
-- `packages/core/src/events.ts` — the `BridgeEvent` union (the data contract every consumer
-  sees).
-- `packages/mcp-channel/src/channel-server.ts` — where `capabilities.experimental['claude/channel']`
-  is declared and where the three bridge tools are registered.
-- `packages/mcp-channel/src/control.ts` — the JSON-lines TCP control protocol that splices the
-  bridge and channel-server processes together.
+- [`../README.md`](../README.md) — install, run the demo, full CLI reference.
+- [`SMOKE.md`](./SMOKE.md) — manual real-claude smoke walkthrough (three terminals plus the
+  plugin install variant).
+- [`ROADMAP.md`](./ROADMAP.md) — milestone index; current shipped scope, planned work, and
+  proposals.
+- [`../packages/core/src/events.ts`](../packages/core/src/events.ts) — the `BridgeEvent` union
+  (the data contract every consumer sees).
+- [`../packages/mcp-channel/src/channel-server.ts`](../packages/mcp-channel/src/channel-server.ts) —
+  where `capabilities.experimental['claude/channel']` is declared and where the three bridge
+  tools are registered.
+- [`../packages/mcp-channel/src/control.ts`](../packages/mcp-channel/src/control.ts) — the
+  JSON-lines TCP control protocol that splices the bridge and channel-server processes
+  together.
 - [Channels reference](https://code.claude.com/docs/en/channels-reference) — Anthropic's
   protocol documentation for `notifications/claude/channel`.

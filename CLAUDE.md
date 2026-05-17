@@ -1,6 +1,6 @@
 # Project notes for Claude Code
 
-This is a TypeScript library + CLI + MCP server. See PLAN.md for architecture, scope, and the current milestone.
+This is a TypeScript library + CLI + MCP server. See `docs/ARCHITECTURE.md` for the design and `docs/ROADMAP.md` for the milestone index.
 
 Default to using Bun instead of Node.js.
 
@@ -68,5 +68,5 @@ small, which helps with performance and accuracy. Also use subagents in parallel
 when possible to further speed up execution.
 
 Skip subagents for trivial work (one-line edits, config tweaks — dispatch
-overhead exceeds the work) or anything that needs in-session judgment (PLAN
+overhead exceeds the work) or anything that needs in-session judgment (roadmap
 edits, design discussions, terminal-driven smoke tests).

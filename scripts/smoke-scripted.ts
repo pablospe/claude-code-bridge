@@ -14,7 +14,7 @@
 //      to boot headlessly (claude needs a TTY per the bridge's own findings)
 //
 // This is intentionally best-effort: the real-claude path lives in the manual
-// procedure documented in SMOKE.md. The scripted variant exists for CI
+// procedure documented in docs/SMOKE.md. The scripted variant exists for CI
 // experiments where a TTY is available; do not rely on it in plain CI.
 
 import { mkdtemp, rm } from "node:fs/promises";
