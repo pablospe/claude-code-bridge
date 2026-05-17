@@ -178,6 +178,74 @@ test("pid is set from the spawned child", async () => {
   await handle.waitExit();
 });
 
+test("kill graceful: writes gracefulInput, child exits cleanly within budget", async () => {
+  const handle = launch("bash", [
+    "-c",
+    'while read line; do echo "got: $line"; if [ "$line" = "exit" ]; then break; fi; done',
+  ]);
+  const chunks: string[] = [];
+  handle.onData((chunk) => chunks.push(chunk));
+  const start = Date.now();
+  await handle.kill("graceful", { gracefulInput: "exit\n" });
+  const elapsed = Date.now() - start;
+  // Should exit within the 1s graceful window with slack.
+  expect(elapsed).toBeLessThan(1500);
+  const exit = await handle.waitExit();
+  expect(exit.code).toBe(0);
+  expect(chunks.join("")).toContain("got: exit");
+});
+
+test("kill graceful escalates to SIGINT when graceful input is ignored", async () => {
+  // Child reads but never honors the input (no exit branch). The launcher
+  // writes gracefulInput, waits 1s, then SIGINTs.
+  const handle = launch("bash", ["-c", "trap '' PIPE; sleep 10"]);
+  const start = Date.now();
+  await handle.kill("graceful", { gracefulInput: "ignored\n" });
+  const elapsed = Date.now() - start;
+  // 1s graceful wait + SIGINT delivery; should be well under 3s.
+  expect(elapsed).toBeGreaterThanOrEqual(1000);
+  expect(elapsed).toBeLessThan(3000);
+  const exit = await handle.waitExit();
+  // SIGINT-killed processes report a non-zero signal/code.
+  expect(exit.code !== 0 || exit.signal !== undefined).toBe(true);
+});
+
+test("kill escalates past SIGINT to SIGTERM/SIGKILL when the child traps SIGINT", async () => {
+  // Trap SIGINT so the graceful → SIGINT step times out; the ladder then
+  // escalates to SIGTERM, then SIGKILL if SIGTERM is also ignored.
+  const handle = launch("bash", ["-c", "trap '' INT; sleep 10"]);
+  const start = Date.now();
+  await handle.kill("graceful", { gracefulInput: "ignored\n" });
+  const elapsed = Date.now() - start;
+  // 1s graceful + 1.5s SIGINT wait + SIGTERM delivery; well under 5s.
+  expect(elapsed).toBeGreaterThanOrEqual(2500);
+  expect(elapsed).toBeLessThan(5000);
+  const exit = await handle.waitExit();
+  expect(exit.code !== 0 || exit.signal !== undefined).toBe(true);
+});
+
+test("kill('signal') sends SIGTERM without writing any bytes", async () => {
+  const handle = launch("bash", ["-c", "sleep 10"]);
+  const chunks: string[] = [];
+  handle.onData((chunk) => chunks.push(chunk));
+  const start = Date.now();
+  await handle.kill("signal");
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(2000);
+  // No bytes written by the launcher for a plain signal kill.
+  expect(chunks.join("")).toBe("");
+  const exit = await handle.waitExit();
+  expect(exit.code !== 0 || exit.signal !== undefined).toBe(true);
+});
+
+test("kill is a no-op once the child has already exited", async () => {
+  const handle = launch("bash", ["-c", "exit 0"]);
+  await handle.waitExit();
+  // Calling kill on an already-exited child must not throw.
+  await handle.kill("graceful", { gracefulInput: "anything\n" });
+  await handle.kill("signal");
+});
+
 test("LauncherUnavailableError: thrown when node-pty fails to load", async () => {
   // Swap the mocked module to throw on access of `spawn`. Using a getter
   // simulates a require-time failure path.

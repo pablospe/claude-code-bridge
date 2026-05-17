@@ -65,6 +65,30 @@ interface PtyModule {
   ): PtyTerminal;
 }
 
+/**
+ * Kill-ladder timings, fixed per M2.md §1. Total budget 5s = 1s + 1.5s + 1.5s
+ * (bounded waits) + 1s of slack to absorb signal-delivery latency. Not
+ * configurable: the supervisor caller has a hard 5s teardown budget that
+ * matches these numbers.
+ */
+const GRACEFUL_WAIT_MS = 1_000;
+const SIGINT_WAIT_MS = 1_500;
+const SIGTERM_WAIT_MS = 1_500;
+
+/**
+ * `term.kill(signal)` may throw if the child has raced us to exit. The kill
+ * ladder treats every escalation as best-effort: a swallowed throw means the
+ * next `waitForExit` either observes the existing exit (returns true) or
+ * times out and the ladder steps forward.
+ */
+function safeKill(term: PtyTerminal, signal: string): void {
+  try {
+    term.kill(signal);
+  } catch {
+    /* swallow: see safeKill doc comment. */
+  }
+}
+
 function loadNodePty(): PtyModule {
   try {
     // `require` (vs dynamic import) keeps `launch()` synchronous and surfaces
@@ -107,6 +131,34 @@ export function launch(command: string, args: string[], opts?: LaunchOpts): Laun
     for (const w of exitWaiters.splice(0)) w(exit);
   });
 
+  /**
+   * Resolves true if the child exits within `timeoutMs`, false on timeout.
+   * Local helper used by each step of the kill ladder; consumes one slot in
+   * `exitWaiters` per call and cleans up that slot on timeout so a late exit
+   * does not try to resolve a dropped promise.
+   */
+  const waitForExit = (timeoutMs: number): Promise<boolean> => {
+    if (exit) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let settled = false;
+      const onExit = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(true);
+      };
+      exitWaiters.push(onExit);
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        const idx = exitWaiters.indexOf(onExit);
+        if (idx >= 0) exitWaiters.splice(idx, 1);
+        resolve(false);
+      }, timeoutMs);
+      (timer as { unref?: () => void }).unref?.();
+    });
+  };
+
   const handle: LauncherHandle = {
     get pid() {
       return term.pid;
@@ -137,9 +189,35 @@ export function launch(command: string, args: string[], opts?: LaunchOpts): Laun
         exitWaiters.push(resolve);
       });
     },
-    async kill(_mode, _killOpts) {
-      // Kill ladder lands in the next commit.
-      throw new Error("kill() not implemented yet");
+    async kill(mode, killOpts) {
+      if (exit) return;
+      if (mode === "signal") {
+        // Single-signal teardown: SIGTERM, then SIGKILL if SIGTERM is ignored
+        // within the standard 1.5s window. Caller did not opt into the
+        // graceful-input step, so no bytes are written to the PTY.
+        safeKill(term, "SIGTERM");
+        if (await waitForExit(SIGTERM_WAIT_MS)) return;
+        safeKill(term, "SIGKILL");
+        return;
+      }
+      // Graceful ladder: gracefulInput → 1s wait → SIGINT (1.5s) → SIGTERM
+      // (1.5s) → SIGKILL. Total of 4s of bounded waits within the 5s budget
+      // the supervisor allots for teardown; the 1s slack absorbs the kernel
+      // delivering the final signal and the child emitting its exit event.
+      const gracefulInput = killOpts?.gracefulInput;
+      if (gracefulInput !== undefined && gracefulInput.length > 0) {
+        try {
+          term.write(gracefulInput);
+        } catch {
+          /* swallow: child may have raced us to closed stdin. */
+        }
+      }
+      if (await waitForExit(GRACEFUL_WAIT_MS)) return;
+      safeKill(term, "SIGINT");
+      if (await waitForExit(SIGINT_WAIT_MS)) return;
+      safeKill(term, "SIGTERM");
+      if (await waitForExit(SIGTERM_WAIT_MS)) return;
+      safeKill(term, "SIGKILL");
     },
   };
 
