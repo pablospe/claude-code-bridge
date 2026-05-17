@@ -780,6 +780,63 @@ test("ControlClient.sendTool rejects on write timeout against a paused peer", as
   await new Promise<void>((resolve) => bareServer.close(() => resolve()));
 }, 20_000);
 
+test("ControlClient.sendTool write-timeout on normal path does not destroy the socket", async () => {
+  // Bare server that accepts hello, acks, then pauses ONLY until cleared.
+  const net = await import("node:net");
+  const sockets: Array<import("node:net").Socket> = [];
+  let paused = true;
+  const bareServer = net.createServer((socket) => {
+    sockets.push(socket);
+    socket.setEncoding("utf8");
+    let buf = "";
+    socket.on("error", () => {});
+    socket.on("data", (chunk: string) => {
+      buf += chunk;
+      const i = buf.indexOf("\n");
+      if (i >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (line.includes('"hello"')) {
+          socket.write(`${JSON.stringify({ type: "hello_ack" })}\n`, () => {
+            if (paused) socket.pause();
+          });
+        }
+      }
+    });
+  });
+  await new Promise<void>((resolve) => bareServer.listen(0, "127.0.0.1", () => resolve()));
+  const addr = bareServer.address() as { port: number } | null;
+  if (!addr) throw new Error("no addr");
+
+  const client = new ControlClient({
+    endpoint: `127.0.0.1:${addr.port}`,
+    sessionId: "wto-nodestroy",
+    onDeliver: () => {},
+  });
+  await client.connect();
+
+  const big = "x".repeat(4 * 1024 * 1024);
+  // Use a short timeout for test speed via env override.
+  const oldTimeout = process.env.CCB_WRITE_TIMEOUT_MS;
+  process.env.CCB_WRITE_TIMEOUT_MS = "300";
+  try {
+    await expect(client.sendTool("bridge_progress", { content: big })).rejects.toThrow(
+      /write timeout/,
+    );
+    // Resume the peer so the queued bytes drain. The client socket must NOT
+    // have been destroyed; subsequent sendTool on the SAME client must work.
+    paused = false;
+    for (const s of sockets) s.resume();
+    await client.sendTool("bridge_done", {});
+  } finally {
+    if (oldTimeout === undefined) delete process.env.CCB_WRITE_TIMEOUT_MS;
+    else process.env.CCB_WRITE_TIMEOUT_MS = oldTimeout;
+    for (const s of sockets) s.destroy();
+    await new Promise<void>((resolve) => bareServer.close(() => resolve()));
+    await client.close().catch(() => undefined);
+  }
+}, 20_000);
+
 test("ControlServer.deliver rejects on write timeout against a paused client", async () => {
   const server = new ControlServer();
   const info = await server.listen({ host: "127.0.0.1", port: 0 });

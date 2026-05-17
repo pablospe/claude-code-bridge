@@ -215,10 +215,7 @@ export class Bridge implements ClaudeCodeBridge {
           "supervisor.close",
         );
       } catch (err) {
-        if (
-          err instanceof Error &&
-          err.message === `supervisor.close timed out after ${this.#closeTimeoutMs}ms`
-        ) {
+        if (err instanceof CloseTimeoutError) {
           console.error(`Bridge: ${err.message} for session ${sessionId}`);
         } else if (inner === undefined) {
           inner = err;
@@ -281,18 +278,19 @@ export class Bridge implements ClaudeCodeBridge {
     session.pending.add(p);
     p.then(
       () => {
+        // A successful append re-arms the latch so a future burst of failures
+        // can escalate again. lastStoreError is retained only for diagnostics.
         session.lastStoreError = undefined;
         session.storeErrorCount = 0;
+        session.storeErrorNotified = false;
       },
       (err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`Bridge: failed to persist event for session ${session.id}: ${msg}`);
-        if (session.lastStoreError === msg) {
-          session.storeErrorCount += 1;
-        } else {
-          session.lastStoreError = msg;
-          session.storeErrorCount = 1;
-        }
+        // Count consecutive failures regardless of message. A run of mixed
+        // errors (EIO -> ENOSPC -> EIO) still escalates at the threshold.
+        session.lastStoreError = msg;
+        session.storeErrorCount += 1;
         if (
           session.storeErrorCount >= STORE_ERROR_THRESHOLD &&
           !session.storeErrorNotified &&
@@ -322,15 +320,44 @@ export class Bridge implements ClaudeCodeBridge {
   }
 }
 
+class CloseTimeoutError extends Error {
+  constructor(label: string, timeoutMs: number) {
+    super(`${label} timed out after ${timeoutMs}ms`);
+    this.name = "CloseTimeoutError";
+  }
+}
+
 function raceWithTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let settled = false;
   const timeoutPromise = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
-      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+      if (settled) return;
+      settled = true;
+      reject(new CloseTimeoutError(label, timeoutMs));
     }, timeoutMs);
     timer.unref?.();
   });
-  return Promise.race([promise, timeoutPromise]).finally(() => {
+  // Attach a swallowing handler to the in-flight promise BEFORE racing so a
+  // late rejection from the loser does not surface as an unhandledRejection
+  // once the race has settled in favor of the timeout.
+  const guarded = promise.then(
+    (value) => {
+      if (!settled) {
+        settled = true;
+      }
+      return value;
+    },
+    (err) => {
+      if (settled) {
+        // Race already lost; swallow late rejection.
+        return undefined as unknown as T;
+      }
+      settled = true;
+      throw err;
+    },
+  );
+  return Promise.race([guarded, timeoutPromise]).finally(() => {
     if (timer) clearTimeout(timer);
   });
 }

@@ -67,7 +67,18 @@ export interface ControlServerEvents {
 const DEFAULT_HELLO_TIMEOUT_MS = 5_000;
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const SHUTDOWN_TIMEOUT_MS = 1_000;
-const WRITE_TIMEOUT_MS = 10_000;
+const DEFAULT_WRITE_TIMEOUT_MS = 10_000;
+
+/**
+ * Per-call lookup so tests can flip the env between calls. Falls back to the
+ * default when the value is missing or unparseable.
+ */
+function writeTimeoutMs(): number {
+  const raw = process.env.CCB_WRITE_TIMEOUT_MS;
+  if (raw === undefined) return DEFAULT_WRITE_TIMEOUT_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_WRITE_TIMEOUT_MS;
+}
 
 /**
  * Loopback TCP control server. Accepts one connection per session.
@@ -126,7 +137,7 @@ export class ControlServer {
       ...(opts.messageId !== undefined ? { messageId: opts.messageId } : {}),
       ...(meta !== undefined ? { meta } : {}),
     };
-    await writeLineWithTimeout(socket, msg, WRITE_TIMEOUT_MS);
+    await writeLineNormal(socket, msg, writeTimeoutMs());
   }
 
   async close(): Promise<void> {
@@ -352,7 +363,7 @@ export class ControlClient {
     if (!socket) {
       throw new Error("not connected");
     }
-    await writeLineWithTimeout(socket, { type: "tool", name, args }, WRITE_TIMEOUT_MS);
+    await writeLineNormal(socket, { type: "tool", name, args }, writeTimeoutMs());
   }
 
   async close(): Promise<void> {
@@ -411,9 +422,10 @@ function writeLine(socket: Socket, msg: ControlMessage): Promise<void> {
 }
 
 /**
- * Bounded writeLine: rejects after timeoutMs if the underlying write callback
- * never fires. Destroys the underlying socket on timeout so subsequent writes
- * fail fast rather than queueing behind a wedged peer.
+ * Bounded writeLine for shutdown paths: rejects after timeoutMs if the write
+ * callback never fires and destroys the socket so subsequent writes fail fast.
+ * Reserved for cooperative shutdown where keeping the socket alive after a
+ * stuck write has no value.
  */
 function writeLineWithTimeout(
   socket: Socket,
@@ -430,6 +442,30 @@ function writeLineWithTimeout(
       } catch {
         // ignore destroy errors
       }
+      reject(new Error("control: write timeout"));
+    }, timeoutMs);
+    timer.unref?.();
+    socket.write(`${JSON.stringify(msg)}\n`, (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+/**
+ * Bounded writeLine for normal-path writes (deliver, sendTool). Rejects after
+ * timeoutMs but leaves the socket alive so a transient stall does not tear
+ * down the whole session for one slow write. Callers handle the rejection.
+ */
+function writeLineNormal(socket: Socket, msg: ControlMessage, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       reject(new Error("control: write timeout"));
     }, timeoutMs);
     timer.unref?.();

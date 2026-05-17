@@ -520,6 +520,76 @@ test("close bounds supervisor.close with closeTimeoutMs and still tears down", a
   }
 });
 
+test("close: late-rejecting supervisor.close after timeout does not produce an unhandledRejection", async () => {
+  // Supervisor.close rejects AFTER the timeout fires. The bridge must attach a
+  // catch handler to the in-flight promise before racing so the late rejection
+  // does not surface as a process-level unhandledRejection.
+  class LateRejectSupervisor implements Supervisor {
+    async start(): Promise<void> {}
+    async sendMessage(): Promise<void> {}
+    async interrupt(): Promise<void> {}
+    async close(): Promise<void> {
+      return new Promise<void>((_resolve, reject) => {
+        const t = setTimeout(() => reject(new Error("late close failure")), 200);
+        t.unref?.();
+      });
+    }
+  }
+
+  const originalError = console.error;
+  console.error = () => {};
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown): void => {
+    unhandled.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const b = new Bridge({
+      storeDir: dir,
+      supervisorFactory: () => new LateRejectSupervisor(),
+      closeTimeoutMs: 100,
+    });
+    const handle = await b.startSession({});
+    await b.close(handle.id);
+    // Wait long enough for the late rejection to settle.
+    await new Promise((r) => setTimeout(r, 500));
+    expect(unhandled.length).toBe(0);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    console.error = originalError;
+  }
+});
+
+test("close: classifies timeout via sentinel, not message string", async () => {
+  // A supervisor.close rejection whose message HAPPENS to match the current
+  // bridge timeout text must NOT be treated as the timeout sentinel. With the
+  // brittle message-equality classifier this case is silently swallowed
+  // (logged, never rethrown) — a real error vanishes. The sentinel-based
+  // classifier surfaces the actual rejection.
+  class TrickyMessageSupervisor implements Supervisor {
+    async start(): Promise<void> {}
+    async sendMessage(): Promise<void> {}
+    async interrupt(): Promise<void> {}
+    async close(): Promise<void> {
+      throw new Error("supervisor.close timed out after 100ms");
+    }
+  }
+
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    const b = new Bridge({
+      storeDir: dir,
+      supervisorFactory: () => new TrickyMessageSupervisor(),
+      closeTimeoutMs: 100,
+    });
+    const handle = await b.startSession({});
+    await expect(b.close(handle.id)).rejects.toThrow("supervisor.close timed out after 100ms");
+  } finally {
+    console.error = originalError;
+  }
+});
+
 test("emit path surfaces persistent store failures as agent.done with reason", async () => {
   class AlwaysFailStore implements BridgeEventStore {
     append(event: BridgeEvent): Promise<void> {
@@ -576,6 +646,148 @@ test("emit path surfaces persistent store failures as agent.done with reason", a
     expect(done).toBeDefined();
     if (done?.type === "agent.done") {
       expect(done.reason).toBe("store-error");
+    }
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test("emit path: consecutive store failures escalate regardless of error message", async () => {
+  // Three failures with DIFFERENT error messages must still escalate to
+  // agent.done — the threshold is consecutive failures, not consecutive
+  // identical messages.
+  const messages = ["EIO", "ENOSPC", "EIO"];
+  class VariedErrorStore implements BridgeEventStore {
+    #i = 0;
+    append(event: BridgeEvent): Promise<void> {
+      if (event.type === "agent.progress") {
+        const msg = messages[this.#i] ?? "unknown";
+        this.#i++;
+        return Promise.reject(new Error(msg));
+      }
+      return Promise.resolve();
+    }
+    async readAll(): Promise<BridgeEvent[]> {
+      return [];
+    }
+    async close(): Promise<void> {}
+  }
+
+  class BurstSupervisor implements Supervisor {
+    ctx: SupervisorContext | undefined;
+    async start(ctx: SupervisorContext): Promise<void> {
+      this.ctx = ctx;
+    }
+    async sendMessage(): Promise<void> {
+      const ctx = this.ctx;
+      if (!ctx) return;
+      for (let i = 0; i < 3; i++) {
+        ctx.emit({ type: "agent.progress", sessionId: ctx.sessionId, content: `tick-${i}` });
+      }
+    }
+    async interrupt(): Promise<void> {}
+    async close(): Promise<void> {}
+  }
+
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    const b = new Bridge({
+      storeDir: dir,
+      supervisorFactory: () => new BurstSupervisor(),
+      storeFactory: () => new VariedErrorStore(),
+    });
+    const seen: BridgeEvent[] = [];
+    const handle = await b.startSession({});
+    const drain = (async () => {
+      for await (const e of b.events(handle.id)) seen.push(e);
+    })();
+    await b.sendMessage(handle.id, "go");
+    await new Promise((r) => setTimeout(r, 20));
+    await b.close(handle.id);
+    await drain;
+
+    const done = seen.find((e) => e.type === "agent.done");
+    expect(done).toBeDefined();
+    if (done?.type === "agent.done") {
+      expect(done.reason).toBe("store-error");
+    }
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test("emit path: storeErrorNotified re-arms after a successful append", async () => {
+  // Pattern: 3 fails -> success -> 3 fails. Each burst-of-3 must emit its own
+  // agent.done, because the success in the middle re-arms the latch.
+  let phase: "fail" | "ok" = "fail";
+  class ToggleStore implements BridgeEventStore {
+    append(event: BridgeEvent): Promise<void> {
+      if (event.type !== "agent.progress") return Promise.resolve();
+      if (phase === "fail") return Promise.reject(new Error("boom"));
+      return Promise.resolve();
+    }
+    async readAll(): Promise<BridgeEvent[]> {
+      return [];
+    }
+    async close(): Promise<void> {}
+  }
+
+  class CtrlSupervisor implements Supervisor {
+    ctx: SupervisorContext | undefined;
+    async start(ctx: SupervisorContext): Promise<void> {
+      this.ctx = ctx;
+    }
+    async sendMessage(_sid: string, _mid: string, content: string): Promise<void> {
+      const ctx = this.ctx;
+      if (!ctx) return;
+      const n = Number(content);
+      for (let i = 0; i < n; i++) {
+        ctx.emit({ type: "agent.progress", sessionId: ctx.sessionId, content: `tick-${i}` });
+      }
+    }
+    async interrupt(): Promise<void> {}
+    async close(): Promise<void> {}
+  }
+
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    const b = new Bridge({
+      storeDir: dir,
+      supervisorFactory: () => new CtrlSupervisor(),
+      storeFactory: () => new ToggleStore(),
+    });
+    const seen: BridgeEvent[] = [];
+    const handle = await b.startSession({});
+    const drain = (async () => {
+      for await (const e of b.events(handle.id)) seen.push(e);
+    })();
+
+    // 3 failing appends.
+    phase = "fail";
+    await b.sendMessage(handle.id, "3");
+    await new Promise((r) => setTimeout(r, 20));
+
+    // 1 successful append to re-arm the latch and reset the counter.
+    phase = "ok";
+    await b.sendMessage(handle.id, "1");
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Another 3 failing appends.
+    phase = "fail";
+    await b.sendMessage(handle.id, "3");
+    await new Promise((r) => setTimeout(r, 20));
+
+    await b.close(handle.id);
+    await drain;
+
+    const dones = seen.filter((e) => e.type === "agent.done");
+    expect(dones.length).toBe(2);
+    for (const d of dones) {
+      if (d.type === "agent.done") {
+        expect(d.reason).toBe("store-error");
+      }
     }
   } finally {
     console.error = originalError;
