@@ -4,6 +4,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   dispatchBridgeTool,
+  emitCrashEvents,
   type Supervisor,
   type SupervisorContext,
   type SupervisorFactory,
@@ -114,9 +115,17 @@ export class ClaudeCodeSupervisor implements Supervisor {
       if (!current) return;
       dispatchBridgeTool(current, name, args);
     });
-    // peer-close handling is deferred to M2.3b; the seam is here so that work
-    // is a one-liner.
-    // server.on("peer-close", (sid) => { ... emitCrashEvents(this.#ctx) ... });
+    // Channel-server peer dropped its TCP control connection (crash, kill -9).
+    // Synthesize the crash event pair so the bridge transitions the session
+    // out of "open" and live consumers see the disconnect. ControlServer
+    // suppresses peer-close during its own cooperative close path, so this
+    // listener fires only on unexpected disconnects.
+    server.on("peer-close", (sid) => {
+      if (sid !== sessionId) return;
+      const current = this.#ctx;
+      if (!current) return;
+      emitCrashEvents(current);
+    });
 
     const tempDir = await mkdtemp(join(tmpdir(), "ccb-claude-mcp-"));
     this.#tempDir = tempDir;

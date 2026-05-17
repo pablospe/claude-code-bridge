@@ -2,7 +2,13 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Bridge, type BridgeEvent, type SupervisorContext } from "@ccb/core";
+import {
+  Bridge,
+  type BridgeEvent,
+  CRASH_AGENT_DONE_REASON,
+  CRASH_SESSION_ENDED_REASON,
+  type SupervisorContext,
+} from "@ccb/core";
 import type { KillOpts, LauncherHandle, LaunchOpts } from "@ccb/process";
 import { ClaudeCodeSupervisor } from "./claude-supervisor.ts";
 
@@ -430,4 +436,97 @@ test("integrates with Bridge: agent.reply lands when control client invokes brid
 
   await client.close();
   await bridge.close(id);
+});
+
+test("peer-close: synthesizes crash event pair when the channel client drops", async () => {
+  // Drive the supervisor through a Bridge so the bridge consumes the emitted
+  // crash events and writes them to the store / live event stream.
+  const factory = captureLauncherFactory();
+  const bridge = new Bridge({
+    storeDir,
+    supervisorFactory: () =>
+      new ClaudeCodeSupervisor({
+        channels: "dev-flag",
+        launcherFactory: factory,
+      }),
+  });
+  const { id } = await bridge.startSession({});
+
+  const launcher = liveLaunchers[0];
+  if (!launcher) throw new Error("launcher missing");
+  const args = [...launcher.args];
+  const cfgIdx = args.indexOf("--mcp-config");
+  const cfgPath = args[cfgIdx + 1];
+  if (!cfgPath) throw new Error("missing --mcp-config value");
+  const json = JSON.parse(await readFile(cfgPath, "utf8")) as {
+    mcpServers: { ccb: { env: { CCB_BRIDGE_ENDPOINT: string } } };
+  };
+  const endpoint = json.mcpServers.ccb.env.CCB_BRIDGE_ENDPOINT;
+
+  // Subscribe to the live event stream so we can assert it terminates cleanly.
+  const liveEvents: BridgeEvent[] = [];
+  const readerDone = (async () => {
+    for await (const ev of bridge.events(id)) {
+      liveEvents.push(ev);
+      if (ev.type === "session.ended") break;
+    }
+  })();
+
+  const { ControlClient } = await import("@ccb/mcp-channel");
+  const client = new ControlClient({
+    endpoint,
+    sessionId: id,
+    onDeliver: () => undefined,
+  });
+  await client.connect();
+
+  // Simulate the channel-server peer dropping its socket (kill -9 / crash).
+  await client.close();
+
+  // The reader terminates on session.ended; bounded wait so a regression
+  // surfaces as a timeout failure rather than a hang.
+  await Promise.race([
+    readerDone,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("reader did not terminate")), 2000),
+    ),
+  ]);
+
+  const done = liveEvents.find(
+    (e) => e.type === "agent.done" && e.reason === CRASH_AGENT_DONE_REASON,
+  );
+  const ended = liveEvents.find(
+    (e) => e.type === "session.ended" && e.reason === CRASH_SESSION_ENDED_REASON,
+  );
+  expect(done).toBeDefined();
+  expect(ended).toBeDefined();
+  // agent.done must precede session.ended.
+  const doneIdx = liveEvents.findIndex(
+    (e) => e.type === "agent.done" && e.reason === CRASH_AGENT_DONE_REASON,
+  );
+  const endedIdx = liveEvents.findIndex(
+    (e) => e.type === "session.ended" && e.reason === CRASH_SESSION_ENDED_REASON,
+  );
+  expect(endedIdx).toBeGreaterThan(doneIdx);
+
+  // Bridge already tore the session down via the supervisor-emitted
+  // session.ended; close is a no-op for this session id.
+});
+
+test("cooperative close: does NOT synthesize crash events", async () => {
+  const { supervisor, ctx, emitted } = await startWithFakeLauncher({});
+  // Sanity: no crash events emitted at start.
+  expect(emitted.some((e) => e.type === "agent.done" && e.reason === CRASH_AGENT_DONE_REASON)).toBe(
+    false,
+  );
+  await supervisor.close(ctx.sessionId);
+  // After cooperative close, the supervisor must not synthesize crash events.
+  // The ControlServer's own peer-close suppression (driven by its #closing
+  // flag) guarantees this; the test pins the behavior end-to-end.
+  expect(emitted.some((e) => e.type === "agent.done" && e.reason === CRASH_AGENT_DONE_REASON)).toBe(
+    false,
+  );
+  expect(
+    emitted.some((e) => e.type === "session.ended" && e.reason === CRASH_SESSION_ENDED_REASON),
+  ).toBe(false);
 });
