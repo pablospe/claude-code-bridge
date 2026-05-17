@@ -53,11 +53,27 @@ fi
 SESSION_ID="$(bun -e 'process.stdout.write(crypto.randomUUID())')"
 MCP_CONFIG_PATH="/tmp/ccb-smoke-${SESSION_ID}.mcp.json"
 ENDPOINT="${CCB_SMOKE_HOST}:${CCB_SMOKE_PORT}"
+BUN_BIN="$(command -v bun)"
+CHANNEL_BIN="$REPO_ROOT/packages/mcp-channel/src/bin.ts"
 
-bun "$CLI_PATH" mcp-config \
-  --endpoint "$ENDPOINT" \
-  --session-id "$SESSION_ID" \
-  --out "$MCP_CONFIG_PATH" >/dev/null
+# Write the .mcp.json with absolute paths to the bun runtime and the channel
+# server entry. The CLI's `ccb mcp-config` defaults to `bunx ccb-channel-server`
+# which only resolves if the package is published; for the workspace-local
+# smoke we want claude to spawn this monorepo's bin directly.
+cat >"$MCP_CONFIG_PATH" <<JSON
+{
+  "mcpServers": {
+    "ccb": {
+      "command": "$BUN_BIN",
+      "args": ["$CHANNEL_BIN"],
+      "env": {
+        "CCB_BRIDGE_ENDPOINT": "$ENDPOINT",
+        "CCB_SESSION_ID": "$SESSION_ID"
+      }
+    }
+  }
+}
+JSON
 
 cat <<EOF
 ccb manual smoke
