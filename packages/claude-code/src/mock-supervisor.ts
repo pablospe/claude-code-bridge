@@ -1,5 +1,6 @@
 import {
   dispatchBridgeTool,
+  emitCrashEvents,
   type Supervisor,
   type SupervisorContext,
   type SupervisorFactory,
@@ -84,6 +85,19 @@ export class MockSupervisor implements Supervisor {
 
   async interrupt(_sessionId: string): Promise<void> {
     // no-op for the mock supervisor
+  }
+
+  /**
+   * Test seam: synthesize the supervisor-crashed event pair through the bridge
+   * exactly as ClaudeCodeSupervisor / ServeSupervisor would on a peer
+   * disconnect. After this call the bridge transitions the session into
+   * closing, so subsequent sendMessage rejects and the live events iterator
+   * terminates after observing session.ended.
+   */
+  triggerCrash(): void {
+    const ctx = this.#ctx;
+    if (!ctx) throw new Error("supervisor not started");
+    emitCrashEvents(ctx);
   }
 
   async close(_sessionId: string): Promise<void> {

@@ -158,6 +158,54 @@ test("MockSupervisor.sendMessage rejects unknown session ids", async () => {
   await sup.close(ctx.sessionId);
 });
 
+test("MockSupervisor.triggerCrash synthesizes crash event pair and ends the session", async () => {
+  const supervisors: MockSupervisor[] = [];
+  const bridge = new Bridge({
+    storeDir,
+    supervisorFactory: () => {
+      const sup = new MockSupervisor();
+      supervisors.push(sup);
+      return sup;
+    },
+  });
+  const { id } = await bridge.startSession({});
+  const sup = supervisors[0];
+  if (!sup) throw new Error("supervisor was not created");
+
+  const iter = bridge.events(id);
+
+  sup.triggerCrash();
+
+  const events = await collect(iter, (e) => e.type === "session.ended");
+  const tail = events.slice(-2);
+  expect(tail).toEqual([
+    { type: "agent.done", sessionId: id, reason: "channel-disconnected" },
+    { type: "session.ended", sessionId: id, reason: "supervisor crashed" },
+  ]);
+
+  // The iterator must end cleanly after session.ended (no more values).
+  const result = await iter[Symbol.asyncIterator]().next();
+  expect(result.done).toBe(true);
+
+  // Subsequent sendMessage rejects because the session is no longer open.
+  await expect(bridge.sendMessage(id, "post-crash")).rejects.toThrow(/closing|unknown session/);
+
+  // JSONL store contains both synthesized events in order.
+  await bridge.close(id);
+  const stored = await bridge.readStoredEvents(id);
+  const types = stored.map((e) => e.type);
+  const doneIdx = types.lastIndexOf("agent.done");
+  const endedIdx = types.lastIndexOf("session.ended");
+  expect(doneIdx).toBeGreaterThanOrEqual(0);
+  expect(endedIdx).toBeGreaterThan(doneIdx);
+  const done = stored[doneIdx];
+  if (done?.type !== "agent.done") throw new Error("expected agent.done");
+  expect(done.reason).toBe("channel-disconnected");
+  const ended = stored[endedIdx];
+  if (ended?.type !== "session.ended") throw new Error("expected session.ended");
+  expect(ended.reason).toBe("supervisor crashed");
+});
+
 test("collect helper rejects when stream stays silent", async () => {
   const iter: AsyncIterable<BridgeEvent> = {
     [Symbol.asyncIterator]() {

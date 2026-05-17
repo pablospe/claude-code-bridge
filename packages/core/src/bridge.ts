@@ -192,21 +192,23 @@ export class Bridge implements ClaudeCodeBridge {
     if (session.closingPromise) return session.closingPromise;
     if (session.state === "closed") return;
     session.state = "closing";
-    session.closingPromise = this.#runClose(session);
+    session.closingPromise = this.#runClose(session, { emitSessionEnded: true });
     return session.closingPromise;
   }
 
-  async #runClose(session: Session): Promise<void> {
+  async #runClose(session: Session, options: { emitSessionEnded: boolean }): Promise<void> {
     const sessionId = session.id;
     let inner: unknown;
     try {
       // Persist session.ended and tear down the supervisor independently:
       // a persistence failure must NOT short-circuit supervisor.close(),
       // otherwise resources leak. Preserve the first error.
-      try {
-        await this.#emitAwaited(session, { type: "session.ended", sessionId });
-      } catch (err) {
-        inner = err;
+      if (options.emitSessionEnded) {
+        try {
+          await this.#emitAwaited(session, { type: "session.ended", sessionId });
+        } catch (err) {
+          inner = err;
+        }
       }
       try {
         await raceWithTimeout(
@@ -262,6 +264,12 @@ export class Bridge implements ClaudeCodeBridge {
    * Fire-and-forget emit path for events the supervisor pushes. The bus emit
    * is synchronous; the store append is tracked in session.pending so close()
    * can drain it. Drops events once the session is closing/closed.
+   *
+   * A supervisor-emitted session.ended is a terminal signal (e.g. channel
+   * disconnect): the event is emitted/persisted, then the bridge transitions
+   * the session into closing and runs the rest of the teardown ladder without
+   * emitting a second session.ended. Subsequent sendMessage/interrupt reject
+   * with the same "closing" error as a user-initiated close.
    */
   #emitFromSupervisor(session: Session, event: BridgeEvent): void {
     if (event.sessionId !== session.id) {
@@ -272,6 +280,12 @@ export class Bridge implements ClaudeCodeBridge {
     }
     if (session.state === "closing" || session.state === "closed") {
       return;
+    }
+    const isTerminalEnd = event.type === "session.ended";
+    if (isTerminalEnd) {
+      // Flip state synchronously so a sendMessage racing with the append
+      // observes "closing" and rejects rather than queuing into a dying bus.
+      session.state = "closing";
     }
     session.bus.emit(event);
     const p = session.store.append(event);
@@ -308,6 +322,19 @@ export class Bridge implements ClaudeCodeBridge {
     ).finally(() => {
       session.pending.delete(p);
     });
+    if (isTerminalEnd) {
+      // The supervisor signalled end-of-session. State is already "closing"
+      // (set above); now run the teardown ladder so the bus closes (live
+      // iterators terminate cleanly) and supervisor.close runs once.
+      // emitSessionEnded:false because the supervisor's own event is already
+      // in flight on session.pending and will be drained inside #runClose.
+      session.closingPromise = this.#runClose(session, { emitSessionEnded: false });
+      // Detach from the unhandled-rejection path; callers who care await it
+      // via bridge.close(sessionId).
+      session.closingPromise.catch((err) => {
+        console.error(`Bridge: supervisor-initiated close failed: ${String(err)}`);
+      });
+    }
   }
 
   /**
