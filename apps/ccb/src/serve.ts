@@ -3,6 +3,7 @@ import {
   Bridge,
   type BridgeEvent,
   dispatchBridgeTool,
+  emitCrashEvents,
   type Supervisor,
   type SupervisorContext,
 } from "@ccb/core";
@@ -91,6 +92,10 @@ class ServeSupervisor implements Supervisor {
         if (sid !== wireId) return;
         this.#dispatchTool(name, args);
       });
+      server.on("peer-close", (sid) => {
+        if (sid !== wireId) return;
+        this.#handlePeerClose();
+      });
       this.#onListening(info);
     } catch (err) {
       try {
@@ -131,6 +136,17 @@ class ServeSupervisor implements Supervisor {
     const ctx = this.#ctx;
     if (!ctx) return;
     dispatchBridgeTool(ctx, name, args);
+  }
+
+  /**
+   * Channel-server peer dropped its TCP control connection (crash, kill -9).
+   * Synthesize the crash event pair so the bridge transitions the session
+   * out of "open" and live consumers see the disconnect.
+   */
+  #handlePeerClose(): void {
+    const ctx = this.#ctx;
+    if (!ctx) return;
+    emitCrashEvents(ctx);
   }
 }
 

@@ -62,6 +62,13 @@ export interface DeliverWireOptions {
 export interface ControlServerEvents {
   hello: (sessionId: string) => void;
   tool: (sessionId: string, name: string, args: Record<string, unknown>) => void;
+  /**
+   * Per-session peer socket closed. Fires once per session, after a successful
+   * hello, when the remote end of the control connection goes away
+   * (channel-server crash, network drop). Does NOT fire during the cooperative
+   * close path driven by ControlServer.close().
+   */
+  "peer-close": (sessionId: string) => void;
 }
 
 const DEFAULT_HELLO_TIMEOUT_MS = 5_000;
@@ -90,6 +97,7 @@ export class ControlServer {
   readonly #sockets = new Set<Socket>();
   #server: NetServer | undefined;
   #helloTimeoutMs: number = DEFAULT_HELLO_TIMEOUT_MS;
+  #closing = false;
 
   on<E extends keyof ControlServerEvents>(event: E, listener: ControlServerEvents[E]): this {
     this.#emitter.on(event, listener);
@@ -141,6 +149,7 @@ export class ControlServer {
   }
 
   async close(): Promise<void> {
+    this.#closing = true;
     const sockets = [...this.#sockets];
     await Promise.allSettled(
       sockets.map(async (socket) => {
@@ -223,6 +232,15 @@ export class ControlServer {
       this.#sockets.delete(socket);
       if (sessionId && this.#sessionSockets.get(sessionId) === socket) {
         this.#sessionSockets.delete(sessionId);
+      }
+      // Only signal peer-close after a successful hello and only when the
+      // close was initiated by the peer (not by our cooperative shutdown).
+      if (sessionId && !this.#closing) {
+        try {
+          this.#emitter.emit("peer-close", sessionId);
+        } catch (err) {
+          console.error(`control: peer-close listener threw: ${String(err)}`);
+        }
       }
     });
     socket.on("error", () => {

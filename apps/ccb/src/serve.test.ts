@@ -184,6 +184,67 @@ test("runServe prints bridge_uuid and jsonl path to stderr at startup", async ()
   expect(joined).toContain(".jsonl");
 });
 
+test("runServe synthesizes crash event pair when the channel peer socket closes", async () => {
+  const ac = new AbortController();
+  const events: BridgeEvent[] = [];
+  const ready = Promise.withResolvers<{ endpoint: string }>();
+
+  const runPromise = runServe({
+    endpoint: "127.0.0.1:0",
+    sessionId: TEST_UUID,
+    storeDir,
+    format: "pretty",
+    signal: ac.signal,
+    onEvent: (ev) => {
+      events.push(ev);
+    },
+    onReady: (info) => {
+      ready.resolve({ endpoint: info.endpoint });
+    },
+    stdout: () => undefined,
+    stderr: () => undefined,
+  });
+
+  const { endpoint } = await ready.promise;
+
+  const client = new ControlClient({
+    endpoint,
+    sessionId: TEST_UUID,
+    onDeliver: () => undefined,
+  });
+  await client.connect();
+
+  // Force-close the peer socket from the channel-server side, simulating a
+  // channel-server crash (kill -9). The supervisor must detect the
+  // disconnect and synthesize the crash event pair.
+  await client.close();
+
+  // Wait for the synthesized session.ended.
+  for (let i = 0; i < 200; i++) {
+    if (events.some((e) => e.type === "session.ended")) break;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+
+  const done = events.find((e) => e.type === "agent.done" && e.reason === "channel-disconnected");
+  const ended = events.find((e) => e.type === "session.ended" && e.reason === "supervisor crashed");
+  expect(done).toBeDefined();
+  expect(ended).toBeDefined();
+  // Ordering: agent.done lands before session.ended.
+  const doneIdx = events.findIndex(
+    (e) => e.type === "agent.done" && e.reason === "channel-disconnected",
+  );
+  const endedIdx = events.findIndex(
+    (e) => e.type === "session.ended" && e.reason === "supervisor crashed",
+  );
+  expect(endedIdx).toBeGreaterThan(doneIdx);
+
+  // runServe blocks on shutdown.promise; the bridge has already torn down the
+  // session via the supervisor-emitted session.ended path. Trigger the abort
+  // so runServe returns and the test exits.
+  ac.abort();
+  await runPromise;
+});
+
 test("runServe writes session.ended to stdout on abort (Ctrl-C style)", async () => {
   const ac = new AbortController();
   const lines: string[] = [];
