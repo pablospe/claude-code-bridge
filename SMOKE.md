@@ -115,23 +115,47 @@ MCP server "ccb": Channel notifications skipped: channels feature is not current
 
 then the MCP server connected and its tools registered, but channel notifications cannot be delivered. The bridge wire is correct; the gate is on `claude`'s side.
 
-Per the [channels overview](https://code.claude.com/docs/en/channels) the gate works like this:
+The published behavior model (per [channels overview](https://code.claude.com/docs/en/channels)) is:
 
-- **Pro / Max users without an organization**: channels are available by default. If you still hit the gate, verify your `claude` session authenticated through claude.ai or a Console API key — channels are not available on Amazon Bedrock, Google Vertex AI, or Microsoft Foundry.
-- **claude.ai Team / Enterprise**: channels are blocked until an admin enables them at [claude.ai → Admin settings → Claude Code → Channels](https://claude.ai/admin-settings/claude-code), or by setting `channelsEnabled: true` in managed settings.
-- **Anthropic Console with API key authentication**: channels are permitted by default unless your organization deploys managed settings that override it. If they do, the admin needs to set `channelsEnabled: true` in those managed settings.
+- **Pro / Max users without an organization**: channels available by default.
+- **claude.ai Team / Enterprise**: blocked until an admin enables at [claude.ai → Admin settings → Claude Code → Channels](https://claude.ai/admin-settings/claude-code) or via `channelsEnabled: true` in managed settings.
+- **Anthropic Console with API key authentication**: permitted by default unless managed settings override.
+- Channels are unavailable on Amazon Bedrock, Google Vertex AI, Microsoft Foundry — only direct Anthropic auth.
 
-`--dangerously-load-development-channels` bypasses the published-plugin allowlist (so `server:ccb` can register without being on the Anthropic-curated list), but it **does not** bypass `channelsEnabled`. If the master switch is off, the dev flag has no effect.
+**What actually happens in practice** (see [`anthropics/claude-code#36460`](https://github.com/anthropics/claude-code/issues/36460), still open at last check):
 
-Updating the `claude` CLI does not change this — the gate is on the account/org tier, not the version. As long as `claude --version` reports `2.1.80` or newer, you have the right binary; what may be missing is the org-side opt-in.
+There is a server-side GrowthBook feature flag called `tengu_harbor` that gates channels independently of the documented `channelsEnabled` setting. The flag is rolling out gradually. Many personal Pro/Max accounts hit the "channels feature is not currently available" message even though the published behavior says channels should be available by default. The admin-settings page does not exist for personal accounts (the auto-generated `<your-email>'s Organization` is a shadow org with no UI), so the doc's "have an admin enable it" advice has no actionable target for personal users.
 
-To verify the gate independently of this project, you can install the official `fakechat` demo channel and try to send a message — if fakechat works in your environment, this project will too:
+**Diagnostic first.** Check your local cache for the flag value:
 
 ```bash
+jq '.cachedGrowthBookFeatures.tengu_harbor' ~/.claude.json 2>/dev/null
+```
+
+- `true` → the flag IS enabled for your account server-side. The block is local — see the "local-side blockers" below.
+- `false` or `null` → the flag is NOT enabled for your account server-side. No local config fixes this; comment on the GitHub issue to request being opted in, or wait for the rollout.
+
+**Local-side blockers** (when the flag is enabled server-side but channels still don't work):
+
+1. Telemetry env vars **disable feature-flag evaluation entirely**, not just network telemetry. If any of these are set, unset them, open a fresh shell, then `claude auth logout && claude auth login`:
+   - `DISABLE_TELEMETRY`
+   - `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
+   - `CLAUDE_CODE_USE_BEDROCK`, `_USE_VERTEX`, `_USE_FOUNDRY`
+
+   Also check `~/.claude/settings.json` and `~/.zshrc` / `~/.bashrc` / `~/.zprofile`.
+
+2. `--dangerously-load-development-channels` bypasses the **plugin allowlist** (so a custom `server:ccb` can register without being on the Anthropic-curated list), but it does **not** bypass `tengu_harbor` or `channelsEnabled`.
+
+3. Updating the `claude` CLI does not change this. As long as `claude --version` is `2.1.80` or newer, the binary is fine; the gate is on the account-side flag.
+
+**Independent verification.** Install the official `fakechat` demo channel — if it doesn't work either, the issue is account-side, not anything specific to this project:
+
+```bash
+# inside a running claude session:
 /plugin install fakechat@claude-plugins-official
-# exit and restart with the channel
+# exit and restart with the channel:
 claude --channels plugin:fakechat@claude-plugins-official
 # open http://localhost:8787 and type a message
 ```
 
-If fakechat also hits the gate, that confirms the issue is the org/account policy, not anything specific to `ccb`.
+If fakechat hits the same gate, you're waiting on `tengu_harbor` rollout. If fakechat works, but `ccb` doesn't, that's something to debug in this project specifically.
