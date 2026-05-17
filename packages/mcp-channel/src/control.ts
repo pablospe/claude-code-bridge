@@ -66,6 +66,7 @@ export interface ControlServerEvents {
 const DEFAULT_HELLO_TIMEOUT_MS = 5_000;
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const SHUTDOWN_TIMEOUT_MS = 1_000;
+const WRITE_TIMEOUT_MS = 10_000;
 const META_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const RESERVED_META_KEYS = new Set(["session_id", "message_id"]);
 
@@ -143,7 +144,7 @@ export class ControlServer {
       ...(opts.messageId !== undefined ? { messageId: opts.messageId } : {}),
       ...(meta !== undefined ? { meta } : {}),
     };
-    await writeLine(socket, msg);
+    await writeLineWithTimeout(socket, msg, WRITE_TIMEOUT_MS);
   }
 
   async close(): Promise<void> {
@@ -369,7 +370,7 @@ export class ControlClient {
     if (!socket) {
       throw new Error("not connected");
     }
-    await writeLine(socket, { type: "tool", name, args });
+    await writeLineWithTimeout(socket, { type: "tool", name, args }, WRITE_TIMEOUT_MS);
   }
 
   async close(): Promise<void> {
@@ -429,7 +430,8 @@ function writeLine(socket: Socket, msg: ControlMessage): Promise<void> {
 
 /**
  * Bounded writeLine: rejects after timeoutMs if the underlying write callback
- * never fires. Used during shutdown paths to avoid hanging on wedged peers.
+ * never fires. Destroys the underlying socket on timeout so subsequent writes
+ * fail fast rather than queueing behind a wedged peer.
  */
 function writeLineWithTimeout(
   socket: Socket,
@@ -441,7 +443,12 @@ function writeLineWithTimeout(
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new Error("control: writeLine timeout"));
+      try {
+        socket.destroy(new Error("control: write timeout"));
+      } catch {
+        // ignore destroy errors
+      }
+      reject(new Error("control: write timeout"));
     }, timeoutMs);
     timer.unref?.();
     socket.write(`${JSON.stringify(msg)}\n`, (err) => {

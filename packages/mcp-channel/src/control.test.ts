@@ -729,6 +729,89 @@ test("ControlServer keeps socket alive when individual lines are within cap (mul
   await server.close();
 });
 
+test("ControlClient.sendTool rejects on write timeout against a paused peer", async () => {
+  // Bare server that accepts hello and acks, then pauses so write callbacks
+  // queue indefinitely.
+  const net = await import("node:net");
+  const sockets: Array<import("node:net").Socket> = [];
+  const bareServer = net.createServer((socket) => {
+    sockets.push(socket);
+    socket.setEncoding("utf8");
+    let buf = "";
+    socket.on("error", () => {});
+    socket.on("data", (chunk: string) => {
+      buf += chunk;
+      const i = buf.indexOf("\n");
+      if (i >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (line.includes('"hello"')) {
+          socket.write(`${JSON.stringify({ type: "hello_ack" })}\n`, () => {
+            socket.pause();
+          });
+        }
+      }
+    });
+  });
+  await new Promise<void>((resolve) => bareServer.listen(0, "127.0.0.1", () => resolve()));
+  const addr = bareServer.address() as { port: number } | null;
+  if (!addr) throw new Error("no addr");
+
+  const client = new ControlClient({
+    endpoint: `127.0.0.1:${addr.port}`,
+    sessionId: "wto-1",
+    onDeliver: () => {},
+  });
+  await client.connect();
+
+  // Fill the kernel + Node buffers with bytes large enough that the write
+  // callback never fires while the peer is paused. The client's
+  // WRITE_TIMEOUT_MS default is 10s, so this should reject in ~10s.
+  const big = "x".repeat(4 * 1024 * 1024);
+  const start = Date.now();
+  await expect(client.sendTool("bridge_progress", { content: big })).rejects.toThrow(
+    /write timeout/,
+  );
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(11_500);
+  expect(elapsed).toBeGreaterThan(9_000);
+
+  for (const s of sockets) s.destroy();
+  await new Promise<void>((resolve) => bareServer.close(() => resolve()));
+}, 20_000);
+
+test("ControlServer.deliver rejects on write timeout against a paused client", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  const net = await import("node:net");
+  const sock = net.createConnection({ host: info.host, port: info.port });
+  await new Promise<void>((resolve) => sock.once("connect", () => resolve()));
+  sock.on("error", () => {});
+
+  sock.write(`${JSON.stringify({ type: "hello", sessionId: "wto-2" })}\n`);
+  // Wait for hello_ack so the session socket is registered.
+  await new Promise<void>((resolve) => {
+    sock.setEncoding("utf8");
+    let buf = "";
+    sock.on("data", (chunk: string) => {
+      buf += chunk;
+      if (buf.includes("hello_ack")) resolve();
+    });
+  });
+  sock.pause();
+
+  const big = "x".repeat(4 * 1024 * 1024);
+  const start = Date.now();
+  await expect(server.deliver("wto-2", big)).rejects.toThrow(/write timeout/);
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(11_500);
+  expect(elapsed).toBeGreaterThan(9_000);
+
+  sock.destroy();
+  await server.close();
+}, 20_000);
+
 test("ControlServer buffers partial JSON lines until newline", async () => {
   const server = new ControlServer();
   const info = await server.listen({ host: "127.0.0.1", port: 0 });

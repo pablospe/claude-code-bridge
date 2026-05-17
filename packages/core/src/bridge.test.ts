@@ -486,6 +486,102 @@ test("concurrent close() shares the in-flight teardown promise", async () => {
   expect(endedCount).toBe(1);
 });
 
+test("close bounds supervisor.close with closeTimeoutMs and still tears down", async () => {
+  class HangingCloseSupervisor implements Supervisor {
+    async start(): Promise<void> {}
+    async sendMessage(): Promise<void> {}
+    async interrupt(): Promise<void> {}
+    async close(): Promise<void> {
+      return new Promise<void>(() => {});
+    }
+  }
+
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    const b = new Bridge({
+      storeDir: dir,
+      supervisorFactory: () => new HangingCloseSupervisor(),
+      closeTimeoutMs: 100,
+    });
+    const handle = await b.startSession({});
+
+    const start = Date.now();
+    await b.close(handle.id);
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(800);
+
+    // Bus is closed; events(id) ends immediately.
+    const seen: BridgeEvent[] = [];
+    for await (const e of b.events(handle.id)) seen.push(e);
+    expect(seen).toEqual([]);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test("emit path surfaces persistent store failures as agent.done with reason", async () => {
+  class AlwaysFailStore implements BridgeEventStore {
+    append(event: BridgeEvent): Promise<void> {
+      if (event.type === "agent.progress") {
+        return Promise.reject(new Error("store kaput"));
+      }
+      return Promise.resolve();
+    }
+    async readAll(): Promise<BridgeEvent[]> {
+      return [];
+    }
+    async close(): Promise<void> {}
+  }
+
+  class LaterBurstSupervisor implements Supervisor {
+    ctx: SupervisorContext | undefined;
+    async start(ctx: SupervisorContext): Promise<void> {
+      this.ctx = ctx;
+    }
+    async sendMessage(_sid: string, _mid: string, _c: string): Promise<void> {
+      const ctx = this.ctx;
+      if (!ctx) return;
+      for (let i = 0; i < 5; i++) {
+        ctx.emit({ type: "agent.progress", sessionId: ctx.sessionId, content: `tick-${i}` });
+      }
+    }
+    async interrupt(): Promise<void> {}
+    async close(): Promise<void> {}
+  }
+
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    const b = new Bridge({
+      storeDir: dir,
+      supervisorFactory: () => new LaterBurstSupervisor(),
+      storeFactory: () => new AlwaysFailStore(),
+    });
+    const seen: BridgeEvent[] = [];
+    const handle = await b.startSession({});
+    const drain = (async () => {
+      for await (const e of b.events(handle.id)) seen.push(e);
+    })();
+    // sendMessage triggers the burst AFTER subscription is live so the bus
+    // delivers the resulting agent.done to the drain.
+    await b.sendMessage(handle.id, "go");
+    // Yield enough microtasks for the rejected appends to settle and the
+    // third failure to emit agent.done.
+    await new Promise((r) => setTimeout(r, 20));
+    await b.close(handle.id);
+    await drain;
+
+    const done = seen.find((e) => e.type === "agent.done");
+    expect(done).toBeDefined();
+    if (done?.type === "agent.done") {
+      expect(done.reason).toBe("store-error");
+    }
+  } finally {
+    console.error = originalError;
+  }
+});
+
 test("supervisor events with wrong sessionId are dropped and logged", async () => {
   class WrongIdSupervisor implements Supervisor {
     ctx: SupervisorContext | undefined;

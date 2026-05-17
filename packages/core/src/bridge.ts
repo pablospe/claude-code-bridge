@@ -41,7 +41,16 @@ export interface BridgeOptions {
    * tests can inject failure modes.
    */
   storeFactory?: StoreFactory;
+  /**
+   * Upper bound for awaiting supervisor.close during Bridge.close. On timeout
+   * the bridge logs and still runs the finally teardown so the session is
+   * removed from the map and the bus/store closed. Defaults to 5000ms.
+   */
+  closeTimeoutMs?: number;
 }
+
+const DEFAULT_CLOSE_TIMEOUT_MS = 5_000;
+const STORE_ERROR_THRESHOLD = 3;
 
 type SessionState = "starting" | "open" | "closing" | "closed";
 
@@ -55,6 +64,12 @@ interface Session {
   readonly pending: Set<Promise<void>>;
   /** Shared promise for an in-flight close so concurrent callers await it. */
   closingPromise?: Promise<void>;
+  /** Last store-append error message; consecutive matches count toward threshold. */
+  lastStoreError?: string;
+  /** Consecutive store.append failures of the same error message. */
+  storeErrorCount: number;
+  /** Once an agent.done store-error notice has fired, do not repeat it. */
+  storeErrorNotified: boolean;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -75,11 +90,13 @@ export class Bridge implements ClaudeCodeBridge {
   readonly #storeDir: string;
   readonly #supervisorFactory: SupervisorFactory;
   readonly #storeFactory: StoreFactory;
+  readonly #closeTimeoutMs: number;
 
   constructor(options: BridgeOptions) {
     this.#storeDir = options.storeDir;
     this.#supervisorFactory = options.supervisorFactory;
     this.#storeFactory = options.storeFactory ?? ((_id, path) => new JsonlEventStore(path));
+    this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
   }
 
   async startSession(_options: StartSessionOptions): Promise<SessionHandle> {
@@ -96,6 +113,8 @@ export class Bridge implements ClaudeCodeBridge {
       supervisor,
       state: "starting",
       pending: new Set(),
+      storeErrorCount: 0,
+      storeErrorNotified: false,
     };
     this.#sessions.set(id, session);
 
@@ -190,9 +209,20 @@ export class Bridge implements ClaudeCodeBridge {
         inner = err;
       }
       try {
-        await session.supervisor.close(sessionId);
+        await raceWithTimeout(
+          session.supervisor.close(sessionId),
+          this.#closeTimeoutMs,
+          "supervisor.close",
+        );
       } catch (err) {
-        if (inner === undefined) inner = err;
+        if (
+          err instanceof Error &&
+          err.message === `supervisor.close timed out after ${this.#closeTimeoutMs}ms`
+        ) {
+          console.error(`Bridge: ${err.message} for session ${sessionId}`);
+        } else if (inner === undefined) {
+          inner = err;
+        }
       }
     } finally {
       // Drain in-flight supervisor-emitted appends before closing the store.
@@ -249,9 +279,35 @@ export class Bridge implements ClaudeCodeBridge {
     session.bus.emit(event);
     const p = session.store.append(event);
     session.pending.add(p);
-    p.catch((err) => {
-      console.error(`Bridge: failed to persist event for session ${session.id}: ${String(err)}`);
-    }).finally(() => {
+    p.then(
+      () => {
+        session.lastStoreError = undefined;
+        session.storeErrorCount = 0;
+      },
+      (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`Bridge: failed to persist event for session ${session.id}: ${msg}`);
+        if (session.lastStoreError === msg) {
+          session.storeErrorCount += 1;
+        } else {
+          session.lastStoreError = msg;
+          session.storeErrorCount = 1;
+        }
+        if (
+          session.storeErrorCount >= STORE_ERROR_THRESHOLD &&
+          !session.storeErrorNotified &&
+          session.state !== "closing" &&
+          session.state !== "closed"
+        ) {
+          session.storeErrorNotified = true;
+          session.bus.emit({
+            type: "agent.done",
+            sessionId: session.id,
+            reason: "store-error",
+          });
+        }
+      },
+    ).finally(() => {
       session.pending.delete(p);
     });
   }
@@ -264,4 +320,17 @@ export class Bridge implements ClaudeCodeBridge {
     session.bus.emit(event);
     await session.store.append(event);
   }
+}
+
+function raceWithTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
