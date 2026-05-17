@@ -1,70 +1,162 @@
 #!/usr/bin/env bun
-// scripts/smoke-scripted.ts - best-effort scripted real-claude smoke.
+// scripts/smoke-scripted.ts - end-to-end scripted real-claude smoke.
 //
-// Gated on CCB_RUN_REAL_CLAUDE=1. When the gate is not set, this script exits
-// 0 immediately with a "skipped" notice. When the gate is set, it:
-//   1. mints a UUID session id
-//   2. emits a per-session .mcp.json via `ccb mcp-config`
-//   3. spawns `bun apps/ccb/src/cli.ts serve` and waits for the "listening on"
-//      stderr line
-//   4. spawns `claude --dangerously-load-development-channels server:ccb
-//      --mcp-config <file>` and pipes a single user prompt to its stdin
-//   5. watches the bridge serve stdout for an agent.reply or agent.done event
-//   6. exits 0 on success, 1 on failure, 0 (with a notice) when claude refuses
-//      to boot headlessly (claude needs a TTY per the bridge's own findings)
+// Gated on CCB_RUN_REAL_CLAUDE=1. When the gate is not set the script writes a
+// notice on stderr and exits 0 (skipped). When the gate is set:
 //
-// This is intentionally best-effort: the real-claude path lives in the manual
-// procedure documented in docs/SMOKE.md. The scripted variant exists for CI
-// experiments where a TTY is available; do not rely on it in plain CI.
+//   1. Creates a fresh temp store directory (per-session JSONL lands here).
+//   2. Spawns `bun apps/ccb/src/cli.ts demo --supervisor=claude --format=json
+//      --store-dir=<tmp> "<prompt>"`. The managed-launch supervisor owns the
+//      `claude` process for the lifetime of the turn.
+//   3. Waits for the demo to exit. If it exits 0, scans the store dir for the
+//      JSONL log it wrote and asserts at least one terminator event is
+//      present (an `agent.reply{final:true}` or an `agent.done`).
+//   4. Returns exit 1 if the JSONL log is missing or contains no terminator.
+//
+// Fallback ("skipped" with exit 0): when managed launch cannot even start —
+// for example node-pty cannot load on this host — the demo command surfaces a
+// `LauncherUnavailableError`. The script detects that signature on stderr and
+// exits 0 with a clear "skipped" notice. This keeps the script honest on hosts
+// where managed launch is impossible without faking the positive path.
+//
+// Cleanup: any spawned child is killed on exit and the temp directory is
+// removed unconditionally.
+//
+// Exit codes:
+//   0 - success (terminator observed) OR skipped (gate unset, or node-pty
+//       unavailable on this host)
+//   1 - failure (demo non-zero, JSONL missing, or no terminator in JSONL)
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const REPO_ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const CLI_PATH = join(REPO_ROOT, "apps/ccb/src/cli.ts");
-const REPLY_TIMEOUT_MS = 30_000;
+const DEMO_TIMEOUT_MS = 90_000;
+const DEFAULT_PROMPT = "ping";
 
-interface Deferred<T> {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-  reject: (err: unknown) => void;
+interface DemoOutcome {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly timedOut: boolean;
 }
 
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (err: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
+async function readAll(stream: ReadableStream<Uint8Array> | null): Promise<string> {
+  if (!stream) return "";
+  return await new Response(stream).text();
+}
+
+async function runDemo(storeDir: string, prompt: string): Promise<DemoOutcome> {
+  const child = Bun.spawn({
+    cmd: [
+      "bun",
+      CLI_PATH,
+      "demo",
+      "--supervisor=claude",
+      "--format=json",
+      `--store-dir=${storeDir}`,
+      `--timeout-ms=${DEMO_TIMEOUT_MS}`,
+      prompt,
+    ],
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env },
   });
-  return { promise, resolve, reject };
+
+  let timedOut = false;
+  const watchdog = setTimeout(() => {
+    timedOut = true;
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // best effort
+    }
+  }, DEMO_TIMEOUT_MS + 5_000);
+  (watchdog as { unref?: () => void }).unref?.();
+
+  // Tee both pipes so we can echo progress while still capturing the whole
+  // buffer. The demo's `--format=json` writes one event per stdout line.
+  const [stdout, stderr, exitCode] = await Promise.all([
+    readAll(child.stdout).then((s) => {
+      for (const line of s.split("\n")) {
+        if (line.length > 0) process.stderr.write(`demo.stdout> ${line}\n`);
+      }
+      return s;
+    }),
+    readAll(child.stderr).then((s) => {
+      for (const line of s.split("\n")) {
+        if (line.length > 0) process.stderr.write(`demo.stderr> ${line}\n`);
+      }
+      return s;
+    }),
+    child.exited,
+  ]);
+
+  clearTimeout(watchdog);
+  return { exitCode, stdout, stderr, timedOut };
 }
 
-async function readUntil(
-  stream: ReadableStream<Uint8Array>,
-  predicate: (line: string) => boolean,
-  onLine?: (line: string) => void,
-): Promise<string | undefined> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) return undefined;
-    buffer += decoder.decode(value, { stream: true });
-    let nl = buffer.indexOf("\n");
-    while (nl >= 0) {
-      const line = buffer.slice(0, nl).trimEnd();
-      buffer = buffer.slice(nl + 1);
-      onLine?.(line);
-      if (predicate(line)) {
-        reader.releaseLock();
-        return line;
-      }
-      nl = buffer.indexOf("\n");
-    }
+function looksLikeLauncherUnavailable(stderr: string): boolean {
+  // The typed error surfaces when the JS catch path runs. Bun on some Linux
+  // hosts panics in the NAPI loader before the JS layer sees the failure, so
+  // also detect the panic signature (`unsupported uv function` or
+  // `Crashed while loading native module` with `node-pty` in the path).
+  return (
+    stderr.includes("LauncherUnavailableError") ||
+    stderr.includes("node-pty failed to load") ||
+    stderr.includes("managed launch is unavailable") ||
+    (stderr.includes("unsupported uv function") && stderr.includes("node-pty")) ||
+    (stderr.includes("Crashed while loading native module") && stderr.includes("node-pty"))
+  );
+}
+
+interface TerminatorScan {
+  readonly jsonlPath: string | undefined;
+  readonly terminator: unknown | undefined;
+}
+
+async function scanStoreForTerminator(storeDir: string): Promise<TerminatorScan> {
+  let entries: string[];
+  try {
+    entries = await readdir(storeDir);
+  } catch {
+    return { jsonlPath: undefined, terminator: undefined };
   }
+  const jsonlFiles = entries.filter((f) => f.endsWith(".jsonl"));
+  if (jsonlFiles.length === 0) {
+    return { jsonlPath: undefined, terminator: undefined };
+  }
+  // Multiple jsonl files in a fresh store dir would mean the demo started more
+  // than one session; we only spawn one. Scan all of them just in case and
+  // return the first match.
+  for (const file of jsonlFiles) {
+    const path = join(storeDir, file);
+    const content = await readFile(path, "utf8");
+    for (const rawLine of content.split("\n")) {
+      const line = rawLine.trim();
+      if (line.length === 0) continue;
+      let event: { type?: string; final?: boolean } | undefined;
+      try {
+        event = JSON.parse(line) as { type?: string; final?: boolean };
+      } catch {
+        continue;
+      }
+      if (!event || typeof event.type !== "string") continue;
+      if (event.type === "agent.done") {
+        return { jsonlPath: path, terminator: event };
+      }
+      if (event.type === "agent.reply" && event.final === true) {
+        return { jsonlPath: path, terminator: event };
+      }
+    }
+    // No terminator in this file; keep the path around so the failure
+    // message can point at it.
+    return { jsonlPath: path, terminator: undefined };
+  }
+  return { jsonlPath: undefined, terminator: undefined };
 }
 
 async function main(): Promise<void> {
@@ -73,170 +165,62 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const sessionId = crypto.randomUUID();
-  const tmp = await mkdtemp(join(tmpdir(), "ccb-smoke-scripted-"));
-  const mcpConfigPath = join(tmp, "smoke.mcp.json");
-  const storeDir = join(tmp, "store");
+  const prompt = process.argv[2] ?? DEFAULT_PROMPT;
+  const storeDir = await mkdtemp(join(tmpdir(), "ccb-smoke-scripted-"));
+  process.stderr.write(`smoke-scripted: store-dir=${storeDir}\n`);
+  process.stderr.write(`smoke-scripted: prompt=${JSON.stringify(prompt)}\n`);
+  process.stderr.write("smoke-scripted: running managed-launch demo...\n");
 
-  const host = "127.0.0.1";
-  const port = 18484;
-  const endpoint = `${host}:${port}`;
-
-  process.stderr.write(`smoke-scripted: session_id=${sessionId} endpoint=${endpoint}\n`);
-  process.stderr.write(`smoke-scripted: mcp-config -> ${mcpConfigPath}\n`);
-
-  const mcpConfigChild = Bun.spawn({
-    cmd: [
-      "bun",
-      CLI_PATH,
-      "mcp-config",
-      "--endpoint",
-      endpoint,
-      "--session-id",
-      sessionId,
-      "--out",
-      mcpConfigPath,
-    ],
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const mcpExit = await mcpConfigChild.exited;
-  if (mcpExit !== 0) {
-    const err = await new Response(mcpConfigChild.stderr).text();
-    process.stderr.write(`smoke-scripted: mcp-config failed: ${err}\n`);
-    await rm(tmp, { recursive: true, force: true });
-    process.exit(1);
-  }
-
-  process.stderr.write("smoke-scripted: starting bridge serve...\n");
-
-  const serveChild = Bun.spawn({
-    cmd: [
-      "bun",
-      CLI_PATH,
-      "serve",
-      "--endpoint",
-      endpoint,
-      "--session-id",
-      sessionId,
-      "--store-dir",
-      storeDir,
-      "--format",
-      "json",
-    ],
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  const replyDeferred = deferred<string>();
-  const replyTimer = setTimeout(() => {
-    replyDeferred.reject(new Error("timeout waiting for agent.reply or agent.done"));
-  }, REPLY_TIMEOUT_MS);
-
-  const stdoutWatch = readUntil(
-    serveChild.stdout,
-    (line) => {
-      if (line.length === 0) return false;
-      try {
-        const ev = JSON.parse(line) as { type?: string };
-        // A turn can legally end with bridge_done only, so agent.done is also
-        // a valid terminator.
-        if (ev.type === "agent.reply" || ev.type === "agent.done") {
-          replyDeferred.resolve(line);
-          return true;
-        }
-      } catch {
-        // ignore non-json lines (the bridge writes pretty too sometimes)
-      }
-      return false;
-    },
-    (line) => {
-      if (line.length > 0) {
-        process.stderr.write(`serve.stdout> ${line}\n`);
-      }
-    },
-  );
-
-  await readUntil(
-    serveChild.stderr,
-    (line) => line.includes("listening on"),
-    (line) => {
-      if (line.length > 0) {
-        process.stderr.write(`serve.stderr> ${line}\n`);
-      }
-    },
-  );
-
-  process.stderr.write("smoke-scripted: spawning claude...\n");
-
-  const claudeChild = Bun.spawn({
-    cmd: [
-      "claude",
-      "--dangerously-load-development-channels",
-      "server:ccb",
-      "--mcp-config",
-      mcpConfigPath,
-      "--allowed-tools",
-      "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done",
-    ],
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env },
-  });
-
+  let exitCode = 1;
   try {
-    const stdin = claudeChild.stdin;
-    if (stdin) {
-      const writer = stdin.getWriter();
-      await writer.write(new TextEncoder().encode("hello bridge\n"));
-      await writer.close();
-    }
-  } catch (err) {
-    process.stderr.write(`smoke-scripted: claude stdin write failed: ${String(err)}\n`);
-  }
+    const demo = await runDemo(storeDir, prompt);
 
-  const claudeExitPromise = claudeChild.exited.then((code) => {
-    process.stderr.write(`smoke-scripted: claude exited code=${code}\n`);
-  });
-
-  let exitCode = 0;
-  try {
-    await Promise.race([
-      replyDeferred.promise.then((line) => {
-        process.stderr.write(`smoke-scripted: observed terminator: ${line}\n`);
-      }),
-      claudeExitPromise.then(() => {
-        throw new Error("claude exited before agent.reply or agent.done was seen");
-      }),
-    ]);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("claude exited before")) {
-      process.stderr.write("smoke-scripted: skipped: claude refused headless boot (needs a TTY)\n");
-      exitCode = 0;
-    } else {
-      process.stderr.write(`smoke-scripted: failed: ${msg}\n`);
+    if (demo.timedOut) {
+      process.stderr.write(
+        `smoke-scripted: failed: demo timed out after ${DEMO_TIMEOUT_MS + 5_000}ms\n`,
+      );
       exitCode = 1;
+      return;
     }
-  } finally {
-    clearTimeout(replyTimer);
-    try {
-      claudeChild.kill();
-    } catch {
-      // best effort
-    }
-    try {
-      serveChild.kill("SIGINT");
-    } catch {
-      // best effort
-    }
-    await Promise.allSettled([stdoutWatch, serveChild.exited, claudeChild.exited]);
-    await rm(tmp, { recursive: true, force: true });
-  }
 
-  process.exit(exitCode);
+    if (demo.exitCode !== 0) {
+      if (looksLikeLauncherUnavailable(demo.stderr)) {
+        process.stderr.write(
+          "smoke-scripted: skipped: node-pty is unavailable on this host (managed launch cannot start)\n",
+        );
+        exitCode = 0;
+        return;
+      }
+      process.stderr.write(`smoke-scripted: failed: demo exited code=${demo.exitCode}\n`);
+      exitCode = 1;
+      return;
+    }
+
+    const scan = await scanStoreForTerminator(storeDir);
+    if (!scan.jsonlPath) {
+      process.stderr.write(`smoke-scripted: failed: no JSONL log written under ${storeDir}\n`);
+      exitCode = 1;
+      return;
+    }
+    if (!scan.terminator) {
+      process.stderr.write(
+        `smoke-scripted: failed: ${scan.jsonlPath} contains no agent.reply{final:true} or agent.done\n`,
+      );
+      exitCode = 1;
+      return;
+    }
+    process.stderr.write(
+      `smoke-scripted: ok: terminator observed in ${scan.jsonlPath}: ${JSON.stringify(scan.terminator)}\n`,
+    );
+    exitCode = 0;
+  } finally {
+    try {
+      await rm(storeDir, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+    process.exit(exitCode);
+  }
 }
 
 main().catch((err: unknown) => {
