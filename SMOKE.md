@@ -104,3 +104,34 @@ Do not depend on this in CI without a PTY surrogate. The intent is to give a sin
 - **TTY requirement.** Because `claude` exits to `--print` mode when stdout is not a TTY, there is no fully automated scripted smoke. The scripted variant above is best-effort only.
 - **Research-preview channels.** The `--dangerously-load-development-channels server:ccb` flag is required during the channels research preview. Once `claude/channel` is on the approved allowlist, that flag will no longer be needed.
 - **Bridge UUID vs wire UUID.** The `--session-id` flag is the wire id the channel server speaks to the bridge with. The bridge mints its own internal UUID for events and the JSONL store. They are intentionally independent.
+
+## Channels availability gate
+
+The channels feature is gated at runtime independent of the command-line flag. If `claude --debug` logs
+
+```
+MCP server "ccb": Channel notifications skipped: channels feature is not currently available
+```
+
+then the MCP server connected and its tools registered, but channel notifications cannot be delivered. The bridge wire is correct; the gate is on `claude`'s side.
+
+Per the [channels overview](https://code.claude.com/docs/en/channels) the gate works like this:
+
+- **Pro / Max users without an organization**: channels are available by default. If you still hit the gate, verify your `claude` session authenticated through claude.ai or a Console API key — channels are not available on Amazon Bedrock, Google Vertex AI, or Microsoft Foundry.
+- **claude.ai Team / Enterprise**: channels are blocked until an admin enables them at [claude.ai → Admin settings → Claude Code → Channels](https://claude.ai/admin-settings/claude-code), or by setting `channelsEnabled: true` in managed settings.
+- **Anthropic Console with API key authentication**: channels are permitted by default unless your organization deploys managed settings that override it. If they do, the admin needs to set `channelsEnabled: true` in those managed settings.
+
+`--dangerously-load-development-channels` bypasses the published-plugin allowlist (so `server:ccb` can register without being on the Anthropic-curated list), but it **does not** bypass `channelsEnabled`. If the master switch is off, the dev flag has no effect.
+
+Updating the `claude` CLI does not change this — the gate is on the account/org tier, not the version. As long as `claude --version` reports `2.1.80` or newer, you have the right binary; what may be missing is the org-side opt-in.
+
+To verify the gate independently of this project, you can install the official `fakechat` demo channel and try to send a message — if fakechat works in your environment, this project will too:
+
+```bash
+/plugin install fakechat@claude-plugins-official
+# exit and restart with the channel
+claude --channels plugin:fakechat@claude-plugins-official
+# open http://localhost:8787 and type a message
+```
+
+If fakechat also hits the gate, that confirms the issue is the org/account policy, not anything specific to `ccb`.
