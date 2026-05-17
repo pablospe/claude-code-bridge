@@ -2,6 +2,7 @@
   "include": [],
   "references": [
     { "path": "packages/core" },
+    { "path": "packages/process" },
     { "path": "packages/mcp-channel" },
     { "path": "packages/claude-code" },
     { "path": "apps/ccb" }
