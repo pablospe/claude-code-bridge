@@ -1,0 +1,20 @@
+{
+  "name": "ccb",
+  "version": "0.0.1",
+  "description": "Bridge that drives interactive Claude Code sessions from external UIs; channel surface for the @ccb stack. The MCP server entry spawns the workspace channel-server bin via ${CLAUDE_PROJECT_DIR}, so users start claude from the claude-code-bridge repo root. CCB_BRIDGE_ENDPOINT and CCB_SESSION_ID are populated at session start by ccb itself; the values here are placeholders meant to be overridden by the bridge before claude launches.",
+  "mcpServers": {
+    "ccb": {
+      "command": "bun",
+      "args": ["${CLAUDE_PROJECT_DIR}/packages/mcp-channel/src/bin.ts"],
+      "env": {
+        "CCB_BRIDGE_ENDPOINT": "127.0.0.1:18484",
+        "CCB_SESSION_ID": ""
+      }
+    }
+  },
+  "channels": [
+    {
+      "server": "ccb"
+    }
+  ]
+}
