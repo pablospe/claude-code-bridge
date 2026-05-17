@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ClaudeCodeSupervisor, generateMcpConfig } from "./index.ts";
+import { generateMcpConfig } from "./index.ts";
 
 test("generateMcpConfig returns default ccb mcpServer entry", () => {
   const cfg = generateMcpConfig({ sessionId: "s1", endpoint: "127.0.0.1:8080" });
@@ -36,28 +36,4 @@ test("generateMcpConfig output is JSON-serializable roundtrip", () => {
   const cfg = generateMcpConfig({ sessionId: "s3", endpoint: "127.0.0.1:5555" });
   const roundtrip = JSON.parse(JSON.stringify(cfg));
   expect(roundtrip).toEqual(cfg);
-});
-
-test("ClaudeCodeSupervisor.start throws because managed launch is not implemented", async () => {
-  const supervisor = new ClaudeCodeSupervisor();
-  await expect(
-    supervisor.start({
-      sessionId: "00000000-0000-0000-0000-000000000000",
-      emit: () => {},
-    }),
-  ).rejects.toThrow(/managed launch is not implemented/);
-});
-
-test("ClaudeCodeSupervisor.sendMessage throws because managed launch is not implemented", async () => {
-  const supervisor = new ClaudeCodeSupervisor();
-  await expect(
-    supervisor.sendMessage("00000000-0000-0000-0000-000000000000", "m1", "hi"),
-  ).rejects.toThrow(/managed launch is not implemented/);
-});
-
-test("ClaudeCodeSupervisor.interrupt throws because managed launch is not implemented", async () => {
-  const supervisor = new ClaudeCodeSupervisor();
-  await expect(supervisor.interrupt("00000000-0000-0000-0000-000000000000")).rejects.toThrow(
-    /managed launch is not implemented/,
-  );
 });

@@ -1,5 +1,3 @@
-import type { Supervisor, SupervisorContext } from "@ccb/core";
-
 export interface McpConfigOptions {
   readonly sessionId: string;
   readonly endpoint: string;
@@ -38,22 +36,4 @@ export function generateMcpConfig(opts: McpConfigOptions): McpConfig {
       },
     },
   };
-}
-
-export class ClaudeCodeSupervisor implements Supervisor {
-  async start(_ctx: SupervisorContext): Promise<void> {
-    throw new Error("managed launch is not implemented");
-  }
-
-  async sendMessage(_sessionId: string, _messageId: string, _content: string): Promise<void> {
-    throw new Error("managed launch is not implemented");
-  }
-
-  async interrupt(_sessionId: string): Promise<void> {
-    throw new Error("managed launch is not implemented");
-  }
-
-  async close(_sessionId: string): Promise<void> {
-    // no-op so Bridge teardown does not throw on a never-started supervisor
-  }
 }
