@@ -98,6 +98,49 @@ listening on 127.0.0.1:18484; session_id=<wire-uuid>; waiting for channel server
 
 Pressing Ctrl-C cleanly closes the bridge: it tears down the control server, drains in-flight store writes, and emits `[session.ended]`.
 
+## Installing as a plugin (no dev-flag warning)
+
+The procedure above uses `--dangerously-load-development-channels server:ccb`, which works but prints a startup warning every time `claude` boots and requires a per-session `--mcp-config` file. The cleaner alternative is to install ccb as a Claude Code plugin from the local marketplace declared in this repo. Once installed and added to `allowedChannelPlugins`, the dev flag is no longer required.
+
+### One-time install
+
+1. Start a `claude` session anywhere and run these slash commands:
+
+   ```
+   /plugin marketplace add /home/pablo/code/claude-code-bridge
+   /plugin install ccb@ccb-local
+   ```
+
+   The first command points at the repo root (substitute your own checkout path) where `.claude-plugin/marketplace.json` lives. The second installs the `ccb` plugin from that marketplace.
+
+2. Tell `claude` it is allowed to expose the channel by adding `allowedChannelPlugins` to `~/.claude/settings.json`:
+
+   ```json
+   {
+     "allowedChannelPlugins": [
+       { "marketplace": "ccb-local", "plugin": "ccb" }
+     ]
+   }
+   ```
+
+### Running with the plugin channel
+
+Start `claude` from the repo root (so `${CLAUDE_PROJECT_DIR}` in the plugin manifest resolves to this workspace) with:
+
+```bash
+claude --channels plugin:ccb@ccb-local \
+  --allowed-tools "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done"
+```
+
+Expected outcome:
+
+- No `--dangerously-load-development-channels` flag and no startup warning prompt about loading development channels.
+- The channel server is spawned by `claude` from the plugin manifest's `mcpServers.ccb` entry, which runs `bun ${CLAUDE_PROJECT_DIR}/packages/mcp-channel/src/bin.ts`.
+- The bridge (`scripts/smoke-manual.sh` in another terminal, or `ccb serve` directly) still owns the control endpoint. The plugin manifest declares `CCB_BRIDGE_ENDPOINT` and `CCB_SESSION_ID` as env keys; the bridge populates them at session start by injecting overrides into the spawn (or via `extraKnownMarketplaces` / `pluginConfigs` settings when integrated, post-M1).
+- All other gating still applies: `tengu_harbor` must be enabled server-side and channels must be available to your account (see "Channels availability gate" below).
+
+The `--dangerously-load-development-channels server:ccb` path described above stays supported as a fallback for users who do not want to install the plugin.
+
 ## Scripted variant (best-effort)
 
 `scripts/smoke-scripted.ts` automates the same flow with one major caveat: `claude` requires a TTY at boot. The script is gated on `CCB_RUN_REAL_CLAUDE=1` and skips with a notice when the gate is not set. When the gate is set and `claude` refuses to boot under a piped stdio handle, the script logs `skipped: claude refused headless boot (needs a TTY)` and exits 0.
