@@ -71,8 +71,17 @@ In a second terminal run:
 
   claude --dangerously-load-development-channels server:ccb --mcp-config $MCP_CONFIG_PATH
 
-Then in claude, send a message that prompts it to call the bridge_reply tool.
-Watch this terminal for the live event stream. Press Ctrl-C to stop.
+Tip: append --allowed-tools "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done"
+to that command to skip the per-tool permission prompt for the bridge's three
+MCP tools only (other permission checks stay gated). The full command becomes:
+
+  claude --dangerously-load-development-channels server:ccb \\
+    --mcp-config $MCP_CONFIG_PATH \\
+    --allowed-tools "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done"
+
+Then in this terminal, type a line of text and press enter — the bridge will
+forward it to claude as a notifications/claude/channel envelope. Watch this
+terminal for the live event stream. Press Ctrl-C to stop.
 
 EOF
 

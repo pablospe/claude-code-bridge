@@ -60,6 +60,16 @@ The script honors these environment overrides:
 
 Copy the exact `claude` command the script printed and run it. `claude` will spawn `bunx ccb-channel-server` as a stdio child, the channel server will dial `127.0.0.1:18484`, and the `ControlServer` in Terminal 1 will accept the hello.
 
+By default, `claude` will prompt for permission the first time the bridge calls a tool (`bridge_reply`, `bridge_progress`, or `bridge_done`). To skip those prompts narrowly, append the `--allowed-tools` flag the script suggests:
+
+```bash
+claude --dangerously-load-development-channels server:ccb \
+  --mcp-config /tmp/ccb-smoke-<uuid>.mcp.json \
+  --allowed-tools "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done"
+```
+
+This auto-approves only those three MCP tools. All other permission checks (Bash, Edit, Write, etc.) stay gated. **Do not** use `--dangerously-skip-permissions` for this — that flag bypasses every permission check, not just the bridge's, and is overkill when `--allowed-tools` does the job.
+
 Inside `claude`, ask something that exercises the bridge tools. The channel server installs three tools — `bridge_reply`, `bridge_progress`, `bridge_done` — and the channel-server `instructions` tell `claude` when to call each one.
 
 ### Terminal 1 (after claude is up) — exercise the inbound channel

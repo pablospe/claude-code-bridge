@@ -177,6 +177,8 @@ async function main(): Promise<void> {
       "server:ccb",
       "--mcp-config",
       mcpConfigPath,
+      "--allowed-tools",
+      "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done",
     ],
     stdin: "pipe",
     stdout: "pipe",
