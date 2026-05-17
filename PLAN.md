@@ -118,10 +118,13 @@ ccb (bridge library + CLI)
 
 In manual smoke-test mode, the user may start `claude` instead of having `ccb` spawn it. The process tree changes, but the bridge, Claude Code, and the channel server still communicate the same way.
 
-The bridge and the channel server are siblings under different parents in managed mode. They share a per-session local control connection carrying a JSON-lines control protocol:
+The bridge and the channel server are siblings under different parents in managed mode. They share a per-session local control connection carrying a JSON-lines control protocol. Every line is one envelope; the discriminated union is:
 
-- bridge -> channel server: `{ type: "deliver", content, messageId, meta }` -> server emits `notifications/claude/channel`.
-- channel server -> bridge: `{ type: "tool", name, args }` -> bridge appends the event and fans out to consumers.
+- `{ type: "hello", sessionId }` — channel server -> bridge, sent immediately after the TCP connection comes up. The bridge replies with `{ type: "hello_ack" }` before any other frame. Both sides bound the handshake with a 5s timeout so a wedged peer cannot stall startup.
+- `{ type: "hello_ack" }` — bridge -> channel server, the only acknowledgment the channel server waits on before unblocking its connect path.
+- `{ type: "deliver", content, messageId?, meta? }` — bridge -> channel server. The channel server fans this out as `notifications/claude/channel`. `meta` keys must match `META_KEY_PATTERN` (`/^[A-Za-z_][A-Za-z0-9_]*$/`), values must be strings, and the reserved keys `session_id` / `message_id` are populated by the channel server itself and cannot be set by callers.
+- `{ type: "tool", name, args }` — channel server -> bridge. The bridge appends the resulting BridgeEvent and fans it out to consumers.
+- `{ type: "close" }` — either side. The receiver ends its half of the socket. Used during graceful shutdown so the peer does not see a bare RST.
 
 The bridge provides `CCB_BRIDGE_ENDPOINT` and `CCB_SESSION_ID` to the Claude Code environment; the channel server reads them at startup.
 

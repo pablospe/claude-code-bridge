@@ -39,8 +39,14 @@ Then in claude, send a message that prompts it to call the bridge_reply tool.
 Watch this terminal for the live event stream. Press Ctrl-C to stop.
 
 listening on 127.0.0.1:18484; session_id=4f3b6e10-...; waiting for channel server to connect...
+bridge_uuid: <bridge-uuid>
+jsonl: .ccb-data/<bridge-uuid>.jsonl
 [session.started] <bridge-uuid>
 ```
+
+The `bridge_uuid` and `jsonl` lines are emitted to stderr at startup so you
+can locate the per-session log without grepping for the bridge id in the event
+stream.
 
 The script honors these environment overrides:
 
@@ -55,6 +61,10 @@ The script honors these environment overrides:
 Copy the exact `claude` command the script printed and run it. `claude` will spawn `bunx ccb-channel-server` as a stdio child, the channel server will dial `127.0.0.1:18484`, and the `ControlServer` in Terminal 1 will accept the hello.
 
 Inside `claude`, ask something that exercises the bridge tools. The channel server installs three tools — `bridge_reply`, `bridge_progress`, `bridge_done` — and the channel-server `instructions` tell `claude` when to call each one.
+
+### Terminal 1 — exercise the inbound channel
+
+After `claude` is up and the channel server has connected, type a line of text in Terminal 1 (where `ccb serve` is running) and press enter. The bridge reads stdin line-by-line and forwards each line through the control connection as a `notifications/claude/channel` envelope. Without this step the smoke only exercises the outbound (`bridge_reply` / `bridge_progress` / `bridge_done`) half.
 
 ### Terminal 3 (optional) — inspect the JSONL log
 

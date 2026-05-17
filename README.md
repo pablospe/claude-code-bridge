@@ -85,7 +85,7 @@ Hosts the bridge control endpoint and streams its event log to stdout. The chann
 The manual three-terminal walkthrough is documented in [SMOKE.md](./SMOKE.md). Two helpers wrap the steps:
 
 - `scripts/smoke-manual.sh` — mints a session id, writes the per-session `.mcp.json`, prints the exact `claude` command to run in the second terminal, then hosts the bridge in the foreground.
-- `scripts/smoke-scripted.ts` — best-effort scripted variant, gated on `CCB_RUN_REAL_CLAUDE=1`. Skips with a notice when `claude` refuses to boot without a TTY.
+- `scripts/smoke-scripted.ts` — automates the outbound tool path only (claude needs a TTY so the inbound side isn't driven from the script). Gated on `CCB_RUN_REAL_CLAUDE=1` and skips with a notice when `claude` refuses to boot without a TTY.
 
 ## Architecture
 

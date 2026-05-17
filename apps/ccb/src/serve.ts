@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import {
   Bridge,
   type BridgeEvent,
@@ -192,12 +193,10 @@ export async function runServe(opts: ServeOptions): Promise<void> {
   // tick and would otherwise miss the head of the lifecycle.
   writeEvent({ type: "session.started", sessionId });
 
-  let stopReader = false;
   const readerDone = Promise.withResolvers<void>();
   (async () => {
     try {
       for await (const ev of bridge.events(sessionId)) {
-        if (stopReader) break;
         writeEvent(ev);
         if (ev.type === "session.ended") break;
       }
@@ -209,6 +208,8 @@ export async function runServe(opts: ServeOptions): Promise<void> {
   stderrWrite(
     `listening on ${bound.endpoint}; session_id=${opts.sessionId}; waiting for channel server to connect...\n`,
   );
+  stderrWrite(`bridge_uuid: ${sessionId}\n`);
+  stderrWrite(`jsonl: ${join(opts.storeDir, `${sessionId}.jsonl`)}\n`);
 
   opts.onReady?.({
     endpoint: bound.endpoint,
@@ -243,7 +244,6 @@ export async function runServe(opts: ServeOptions): Promise<void> {
   try {
     await shutdown.promise;
   } finally {
-    stopReader = true;
     stdinReader.stop();
     if (signal) signal.removeEventListener("abort", onAbort);
     if (!signal) {

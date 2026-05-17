@@ -63,8 +63,25 @@ test("formatPretty produces the expected human-readable shapes", () => {
     '[agent.progress] "thinking"',
   );
   expect(
+    formatPretty({
+      type: "agent.progress",
+      sessionId: "s1",
+      messageId: "m1",
+      content: "thinking",
+    }),
+  ).toBe('[agent.progress] m1 "thinking"');
+  expect(
     formatPretty({ type: "agent.reply", sessionId: "s1", content: "echo: hello", final: true }),
   ).toBe('[agent.reply final=true] "echo: hello"');
+  expect(
+    formatPretty({
+      type: "agent.reply",
+      sessionId: "s1",
+      messageId: "m1",
+      content: "echo: hello",
+      final: true,
+    }),
+  ).toBe('[agent.reply final=true] m1 "echo: hello"');
   expect(
     formatPretty({ type: "agent.reply", sessionId: "s1", content: "partial", final: false }),
   ).toBe('[agent.reply final=false] "partial"');

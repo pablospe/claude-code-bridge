@@ -11,9 +11,13 @@ export const formatPretty: Formatter = (event) => {
     case "message.sent":
       return `[message.sent] ${event.messageId} ${JSON.stringify(event.content)}`;
     case "agent.progress":
-      return `[agent.progress] ${JSON.stringify(event.content)}`;
+      return event.messageId !== undefined
+        ? `[agent.progress] ${event.messageId} ${JSON.stringify(event.content)}`
+        : `[agent.progress] ${JSON.stringify(event.content)}`;
     case "agent.reply":
-      return `[agent.reply final=${event.final}] ${JSON.stringify(event.content)}`;
+      return event.messageId !== undefined
+        ? `[agent.reply final=${event.final}] ${event.messageId} ${JSON.stringify(event.content)}`
+        : `[agent.reply final=${event.final}] ${JSON.stringify(event.content)}`;
     case "agent.done":
       return event.reason !== undefined ? `[agent.done] reason=${event.reason}` : "[agent.done]";
     case "agent.input_requested":

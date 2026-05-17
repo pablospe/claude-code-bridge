@@ -152,3 +152,63 @@ test("runServe shuts down cleanly when the abort signal fires", async () => {
   // Should resolve without throwing; if it hangs the test times out.
   await runPromise;
 });
+
+test("runServe prints bridge_uuid and jsonl path to stderr at startup", async () => {
+  const ac = new AbortController();
+  const stderrLines: string[] = [];
+  const ready = Promise.withResolvers<void>();
+
+  const runPromise = runServe({
+    endpoint: "127.0.0.1:0",
+    sessionId: TEST_UUID,
+    storeDir,
+    format: "pretty",
+    signal: ac.signal,
+    onReady: () => {
+      ready.resolve();
+    },
+    stdout: () => undefined,
+    stderr: (line) => {
+      stderrLines.push(line);
+    },
+  });
+
+  await ready.promise;
+  ac.abort();
+  await runPromise;
+
+  const joined = stderrLines.join("");
+  expect(joined).toMatch(/listening on 127\.0\.0\.1:\d+/);
+  expect(joined).toMatch(/bridge_uuid: [0-9a-f-]{36}/i);
+  expect(joined).toContain(`jsonl: ${storeDir}/`);
+  expect(joined).toContain(".jsonl");
+});
+
+test("runServe writes session.ended to stdout on abort (Ctrl-C style)", async () => {
+  const ac = new AbortController();
+  const lines: string[] = [];
+  const ready = Promise.withResolvers<void>();
+
+  const runPromise = runServe({
+    endpoint: "127.0.0.1:0",
+    sessionId: TEST_UUID,
+    storeDir,
+    format: "pretty",
+    signal: ac.signal,
+    onReady: () => {
+      ready.resolve();
+    },
+    stdout: (line) => {
+      lines.push(line);
+    },
+    stderr: () => undefined,
+  });
+
+  await ready.promise;
+  ac.abort();
+  await runPromise;
+
+  // Last stdout line should be the session.ended marker.
+  const last = lines.at(-1) ?? "";
+  expect(last).toContain("[session.ended]");
+});
