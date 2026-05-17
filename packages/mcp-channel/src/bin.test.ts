@@ -87,6 +87,59 @@ test(
 );
 
 test(
+  "ccb-channel-server bin exits promptly on SIGTERM during connect (no full connect-timeout wait)",
+  async () => {
+    // Endpoint that accepts the TCP connection but never sends hello_ack, so
+    // the bin would otherwise block on the 10s connect timeout. SIGTERM should
+    // short-circuit via the shutdown handler installed before connect.
+    const net = await import("node:net");
+    const sockets: Array<import("node:net").Socket> = [];
+    const bareServer = net.createServer((socket) => {
+      sockets.push(socket);
+      socket.on("error", () => {});
+    });
+    await new Promise<void>((resolve) => bareServer.listen(0, "127.0.0.1", () => resolve()));
+    const addr = bareServer.address() as { port: number } | null;
+    if (!addr) throw new Error("no addr");
+
+    const child = Bun.spawn({
+      cmd: ["bun", BIN_PATH],
+      env: {
+        ...process.env,
+        CCB_BRIDGE_ENDPOINT: `127.0.0.1:${addr.port}`,
+        CCB_SESSION_ID: "bin-early-sigterm",
+        CCB_CONNECT_TIMEOUT_MS: "10000",
+      },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    try {
+      // Give the bin a moment to install its signal handlers, then SIGTERM it.
+      await new Promise<void>((r) => setTimeout(r, 250));
+      const start = Date.now();
+      child.kill("SIGTERM");
+      const exitCode = await Promise.race([
+        child.exited,
+        new Promise<number>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("bin did not exit within 5s of SIGTERM")), 5000),
+        ),
+      ]);
+      const elapsed = Date.now() - start;
+      // Must exit well before the 10s connect timeout would have fired.
+      expect(elapsed).toBeLessThan(3500);
+      expect(typeof exitCode === "number" || exitCode === null).toBe(true);
+    } finally {
+      if (!child.killed) child.kill("SIGKILL");
+      for (const s of sockets) s.destroy();
+      await new Promise<void>((resolve) => bareServer.close(() => resolve()));
+    }
+  },
+  { timeout: 15_000 },
+);
+
+test(
   "ccb-channel-server bin connects via CCB_BRIDGE_ENDPOINT and completes hello handshake",
   async () => {
     const server = new ControlServer();

@@ -5,11 +5,9 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
+import { validateWireMeta } from "./meta-validation.ts";
 
 export type ToolName = "bridge_reply" | "bridge_progress" | "bridge_done";
-
-const META_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const RESERVED_META_KEYS = new Set(["session_id", "message_id"]);
 
 const BridgeReplyArgsSchema = z.object({
   content: z.string(),
@@ -170,21 +168,7 @@ export function createChannelServer(options: CreateChannelServerOptions): Channe
   });
 
   const deliver = async (content: string, opts?: DeliverOptions): Promise<void> => {
-    const meta: Record<string, string> = {};
-    if (opts?.meta) {
-      for (const [key, value] of Object.entries(opts.meta)) {
-        if (!META_KEY_PATTERN.test(key)) {
-          throw new Error(`invalid meta key: ${key}`);
-        }
-        if (RESERVED_META_KEYS.has(key)) {
-          throw new Error(`meta key is reserved: ${key}`);
-        }
-        if (typeof value !== "string") {
-          throw new Error(`meta value must be string: ${key}`);
-        }
-        meta[key] = value;
-      }
-    }
+    const meta: Record<string, string> = opts?.meta ? validateWireMeta(opts.meta) : {};
     meta.session_id = sessionId;
     if (opts?.messageId !== undefined) {
       meta.message_id = opts.messageId;

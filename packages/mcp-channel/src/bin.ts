@@ -4,6 +4,16 @@ import { createChannelServer } from "./channel-server.ts";
 import { ControlClient } from "./control.ts";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
+const SHUTDOWN_BUDGET_MS = 1_500;
+
+async function drainStdout(): Promise<void> {
+  // The MCP transport writes JSON-RPC frames to stdout. A bare process.exit
+  // can truncate the last frame before claude reads it. Wait for the empty
+  // write callback so the kernel has flushed.
+  await new Promise<void>((resolve) => {
+    process.stdout.write("", () => resolve());
+  });
+}
 
 async function main(): Promise<void> {
   const connectTimeoutMs = Number(process.env.CCB_CONNECT_TIMEOUT_MS ?? DEFAULT_CONNECT_TIMEOUT_MS);
@@ -11,17 +21,23 @@ async function main(): Promise<void> {
     console.error(
       `ccb-channel-server: CCB_CONNECT_TIMEOUT_MS must be a positive number (got ${process.env.CCB_CONNECT_TIMEOUT_MS})`,
     );
-    process.exit(2);
+    process.exitCode = 2;
+    await drainStdout();
+    process.exit();
   }
   const endpoint = process.env.CCB_BRIDGE_ENDPOINT;
   const sessionId = process.env.CCB_SESSION_ID;
   if (!endpoint) {
     console.error("ccb-channel-server: CCB_BRIDGE_ENDPOINT is required");
-    process.exit(2);
+    process.exitCode = 2;
+    await drainStdout();
+    process.exit();
   }
   if (!sessionId) {
     console.error("ccb-channel-server: CCB_SESSION_ID is required");
-    process.exit(2);
+    process.exitCode = 2;
+    await drainStdout();
+    process.exit();
   }
 
   // controlClient is wired after handle so onTool can reference it.
@@ -34,7 +50,17 @@ async function main(): Promise<void> {
     },
   });
 
+  let shuttingDown = false;
   const shutdown = async (code = 0): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const budget = setTimeout(() => {
+      // Hard-stop if cooperative shutdown stalls beyond the budget so claude
+      // does not hang on a wedged channel server.
+      process.exitCode = code;
+      process.exit();
+    }, SHUTDOWN_BUDGET_MS);
+    budget.unref?.();
     try {
       await handle.server.close();
     } catch {
@@ -45,7 +71,10 @@ async function main(): Promise<void> {
     } catch {
       // best effort
     }
-    process.exit(code);
+    clearTimeout(budget);
+    process.exitCode = code;
+    await drainStdout();
+    process.exit();
   };
 
   controlClient = new ControlClient({
@@ -60,6 +89,14 @@ async function main(): Promise<void> {
     },
   });
 
+  // Install signal handlers IMMEDIATELY so an early Ctrl-C runs the bounded
+  // shutdown path instead of stalling against the connect race.
+  const onSignal = (): void => {
+    void shutdown();
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+
   let connectTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
@@ -69,27 +106,25 @@ async function main(): Promise<void> {
           () => reject(new Error(`connect timed out after ${connectTimeoutMs}ms`)),
           connectTimeoutMs,
         );
+        connectTimer.unref?.();
       }),
     ]);
   } catch (err) {
-    console.error(`ccb-channel-server: ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(3);
-  } finally {
     if (connectTimer) clearTimeout(connectTimer);
+    console.error(`ccb-channel-server: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 3;
+    await drainStdout();
+    process.exit();
   }
+  if (connectTimer) clearTimeout(connectTimer);
 
   const stdio = new StdioServerTransport();
   await handle.server.connect(stdio);
-
-  process.on("SIGINT", () => {
-    void shutdown();
-  });
-  process.on("SIGTERM", () => {
-    void shutdown();
-  });
 }
 
-main().catch((err: unknown) => {
+main().catch(async (err: unknown) => {
   console.error("ccb-channel-server: fatal error", err);
-  process.exit(1);
+  process.exitCode = 1;
+  await drainStdout();
+  process.exit();
 });

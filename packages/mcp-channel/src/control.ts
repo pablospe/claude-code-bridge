@@ -7,6 +7,7 @@ import {
   type Socket,
 } from "node:net";
 import * as z from "zod/v4";
+import { validateWireMeta } from "./meta-validation.ts";
 
 const HelloMessageSchema = z.object({
   type: z.literal("hello"),
@@ -67,25 +68,6 @@ const DEFAULT_HELLO_TIMEOUT_MS = 5_000;
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const SHUTDOWN_TIMEOUT_MS = 1_000;
 const WRITE_TIMEOUT_MS = 10_000;
-const META_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const RESERVED_META_KEYS = new Set(["session_id", "message_id"]);
-
-function validateWireMeta(meta: Readonly<Record<string, unknown>>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(meta)) {
-    if (!META_KEY_PATTERN.test(key)) {
-      throw new Error(`invalid meta key: ${key}`);
-    }
-    if (RESERVED_META_KEYS.has(key)) {
-      throw new Error(`meta key is reserved: ${key}`);
-    }
-    if (typeof value !== "string") {
-      throw new Error(`meta value must be string: ${key}`);
-    }
-    out[key] = value;
-  }
-  return out;
-}
 
 /**
  * Loopback TCP control server. Accepts one connection per session.
