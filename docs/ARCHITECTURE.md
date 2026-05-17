@@ -2,12 +2,19 @@
 
 ## The idea
 
-Channels for one direction, MCP tools for the other. Together they let an external consumer drive
-a running, already-authenticated Claude Code session without restarting it, without scraping the
-terminal, and without talking to the model API directly. The bridge owns session state and an
-append-only event log; Claude Code remains the agent runtime; the two communicate over a thin
-per-session control connection between the bridge and a stdio MCP server that Claude Code spawns
-as its own child.
+Channels for inbound general content, MCP tools for outbound general content. Together they let
+an external consumer drive a running, already-authenticated Claude Code session without
+restarting it, without scraping the terminal, and without talking to the model API directly. The
+bridge owns session state and an append-only event log; Claude Code remains the agent runtime;
+the two communicate over a thin per-session control connection between the bridge and a stdio
+MCP server that Claude Code spawns as its own child.
+
+> "Channels" refers to the MCP notification mechanism that Claude Code exposes for external
+> systems to push content into a running session (see the [channels reference](https://code.claude.com/docs/en/channels-reference)).
+> It is not a single bidirectional pipe for arbitrary content: the general-content direction
+> is server-to-claude; outbound general content from claude uses regular MCP tools. The
+> channels reference also documents a permission-routing capability that is bidirectional in
+> a narrow, fixed-shape way (see [Channel direction notes](#channel-direction-notes)).
 
 ## The diagram
 
@@ -71,9 +78,14 @@ and named pipes live in [`packages/mcp-channel/src/control.ts`](../packages/mcp-
    over the loopback TCP control connection to the `ControlClient` running inside the channel
    server process.
 5. The channel server emits an MCP notification `notifications/claude/channel` with the content
-   and `meta` (`session_id`, `message_id`).
+   and `meta`. The bridge stuffs `session_id` and `message_id` inside `meta` by convention; the
+   notification's first-class fields per the channels reference are `content` and `meta`.
 6. Claude Code surfaces the inbound text in the running session as
-   `<channel source="ccb" session_id="..." message_id="...">hello</channel>`.
+   `<channel source="ccb" session_id="..." message_id="...">hello</channel>`. The `source`
+   attribute is populated by Claude Code from the registered MCP server name (`ccb`). The
+   other attributes come from `meta` keys; both sides validate keys against
+   [`META_KEY_PATTERN`](../packages/mcp-channel/src/meta-validation.ts) to prevent XML
+   attribute injection.
 7. Claude responds by calling the `bridge_reply` MCP tool (or `bridge_progress` /
    `bridge_done`), with `content`, `final:true`, and the inbound `messageId`.
 8. The channel server's `onTool` callback forwards `{"type":"tool","name":"bridge_reply","args":...}`
@@ -116,6 +128,28 @@ tools come out; the JSONL event log is the durable record.
 |   |   | `claude --print --output-format stream-json` | one-shot; loses interactive state |
 |   |   | Claude Agent SDK | re-spawns the model context |
 
+## Channel direction notes
+
+"Channels" describes the inbound MCP notification mechanism. The general-content direction
+goes server-to-claude only. There is no claude-to-server channel notification for arbitrary
+content; that direction uses regular MCP tools, which is why the bridge exposes
+`bridge_reply` / `bridge_progress` / `bridge_done` as the outbound surface.
+
+The channels reference also describes a permission-routing capability that is bidirectional but
+narrowly scoped: when Claude Code would normally show an in-terminal tool-approval prompt, an
+MCP server that opts into this capability can receive the prompt over a notification, present
+it to a human elsewhere, and reply with an allow/deny decision over a paired notification. The
+payloads are fixed and tied to tool-approval semantics; this is not a general claude-to-server
+content channel. The bridge does not advertise this capability today; if a consumer needs
+permission-prompt routing, the bridge would opt in explicitly and handle both halves. See
+[ROADMAP.md](./ROADMAP.md) for the milestone where this lands.
+
+The handshake for both capabilities is unilateral on the bridge side: the MCP server
+advertises `experimental['claude/channel']` (and, optionally, the paired permission capability),
+Claude Code detects them at connection time, and registers handlers once a runtime gate passes
+(account-eligible, `--channels` flag listing this server, etc.). Claude Code does not advertise
+a reciprocal client capability the bridge needs to read.
+
 ## What channels + MCP doesn't give you
 
 A richer UI (the T3 Code shape, an orchestrator that wants to render tool timelines) needs
@@ -152,4 +186,5 @@ API's consumer. Channels deliberately deliver complete messages, not tokens.
   JSON-lines TCP control protocol that splices the bridge and channel-server processes
   together.
 - [Channels reference](https://code.claude.com/docs/en/channels-reference) — Anthropic's
-  protocol documentation for `notifications/claude/channel`.
+  protocol documentation for `notifications/claude/channel`, including the permission-routing
+  capability mentioned above.
