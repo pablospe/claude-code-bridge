@@ -2,6 +2,8 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ClaudeCodeSupervisor, MockSupervisor } from "@ccb/claude-code";
+import { selectSupervisorFactory } from "./cli.ts";
 
 const CLI_PATH = new URL("./cli.ts", import.meta.url).pathname;
 
@@ -55,7 +57,61 @@ test("ccb demo --help lists supported flags", async () => {
   expect(stdout).toMatch(/--format/);
   expect(stdout).toMatch(/--store-dir/);
   expect(stdout).toMatch(/--timeout-ms/);
-  expect(stdout).not.toMatch(/--supervisor/);
+  expect(stdout).toMatch(/--supervisor <mock\|claude>/);
+  expect(stdout).toMatch(/--channels <dev-flag\|plugin>/);
+});
+
+test("ccb demo --supervisor=bogus exits non-zero with a clear error", async () => {
+  const { exitCode, stderr } = await runCli([
+    "demo",
+    "hi",
+    "--supervisor",
+    "bogus",
+    "--store-dir",
+    storeDir,
+  ]);
+  expect(exitCode).not.toBe(0);
+  expect(stderr).toMatch(/supervisor/i);
+  expect(stderr.toLowerCase()).toMatch(/mock|claude/);
+});
+
+test("ccb demo --channels=bogus exits non-zero with a clear error", async () => {
+  const { exitCode, stderr } = await runCli([
+    "demo",
+    "hi",
+    "--channels",
+    "bogus",
+    "--store-dir",
+    storeDir,
+  ]);
+  expect(exitCode).not.toBe(0);
+  expect(stderr).toMatch(/channels/i);
+  expect(stderr.toLowerCase()).toMatch(/dev-flag|plugin/);
+});
+
+test("ccb demo --supervisor=mock preserves default echo behavior", async () => {
+  const { exitCode, stdout, stderr } = await runCli([
+    "demo",
+    "hello",
+    "--supervisor",
+    "mock",
+    "--format",
+    "json",
+    "--store-dir",
+    storeDir,
+    "--timeout-ms",
+    "3000",
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(`ccb demo exited ${exitCode}; stderr=${stderr}`);
+  }
+  const parsed = stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .map((l) => JSON.parse(l) as { type: string; content?: string });
+  const reply = parsed.find((p) => p.type === "agent.reply");
+  expect(reply?.content).toBe("echo: hello");
 });
 
 test("ccb mcp-config --help lists session-id, endpoint, out flags", async () => {
@@ -134,3 +190,21 @@ test(
   },
   { timeout: 15_000 },
 );
+
+test("selectSupervisorFactory('mock') returns a MockSupervisor", () => {
+  const factory = selectSupervisorFactory({ supervisor: "mock", channels: "dev-flag" });
+  const sup = factory("sess-id");
+  expect(sup).toBeInstanceOf(MockSupervisor);
+});
+
+test("selectSupervisorFactory('claude', 'dev-flag') returns a ClaudeCodeSupervisor", () => {
+  const factory = selectSupervisorFactory({ supervisor: "claude", channels: "dev-flag" });
+  const sup = factory("sess-id");
+  expect(sup).toBeInstanceOf(ClaudeCodeSupervisor);
+});
+
+test("selectSupervisorFactory('claude', 'plugin') returns a ClaudeCodeSupervisor", () => {
+  const factory = selectSupervisorFactory({ supervisor: "claude", channels: "plugin" });
+  const sup = factory("sess-id");
+  expect(sup).toBeInstanceOf(ClaudeCodeSupervisor);
+});

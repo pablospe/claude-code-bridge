@@ -1,5 +1,10 @@
 #!/usr/bin/env bun
-import { mockSupervisorFactory } from "@ccb/claude-code";
+import {
+  type ChannelsMode,
+  claudeCodeSupervisorFactory,
+  mockSupervisorFactory,
+} from "@ccb/claude-code";
+import type { SupervisorFactory } from "@ccb/core";
 import { Command, InvalidArgumentError } from "commander";
 import { type DemoFormat, runDemo } from "./demo.ts";
 import { formatJson, formatPretty } from "./format.ts";
@@ -8,10 +13,31 @@ import { runServe, type ServeFormat } from "./serve.ts";
 
 const VERSION = "0.0.1";
 
+export type SupervisorChoice = "mock" | "claude";
+
+export interface SupervisorSelection {
+  readonly supervisor: SupervisorChoice;
+  readonly channels: ChannelsMode;
+}
+
+/**
+ * Build the supervisor factory the demo subcommand will hand to Bridge. The
+ * `channels` selection is consulted only for the `claude` supervisor; for
+ * `mock` it is accepted and ignored so the flag stays forward-compatible.
+ */
+export function selectSupervisorFactory(sel: SupervisorSelection): SupervisorFactory {
+  if (sel.supervisor === "claude") {
+    return claudeCodeSupervisorFactory({ channels: sel.channels });
+  }
+  return mockSupervisorFactory();
+}
+
 interface DemoCommandOptions {
   readonly format: DemoFormat;
   readonly storeDir: string;
   readonly timeoutMs: number;
+  readonly supervisor: SupervisorChoice;
+  readonly channels: ChannelsMode;
 }
 
 interface McpConfigCommandOptions {
@@ -52,6 +78,16 @@ function parseEndpointOption(value: string): string {
   return value;
 }
 
+function parseSupervisorChoice(value: string): SupervisorChoice {
+  if (value === "mock" || value === "claude") return value;
+  throw new InvalidArgumentError("--supervisor must be one of: mock, claude");
+}
+
+function parseChannelsMode(value: string): ChannelsMode {
+  if (value === "dev-flag" || value === "plugin") return value;
+  throw new InvalidArgumentError("--channels must be one of: dev-flag, plugin");
+}
+
 export function buildProgram(): Command {
   const program = new Command();
   program
@@ -61,7 +97,7 @@ export function buildProgram(): Command {
 
   program
     .command("demo")
-    .description("run an end-to-end demo turn using the MockSupervisor")
+    .description("run an end-to-end demo turn against a mock or real claude supervisor")
     .argument("<input>", "message to send to the agent")
     .option(
       "--format <json|pretty|stream>",
@@ -76,11 +112,27 @@ export function buildProgram(): Command {
       parsePositiveInt,
       10_000,
     )
+    .option(
+      "--supervisor <mock|claude>",
+      "supervisor to drive the bridge: mock (default) or claude (managed launch)",
+      parseSupervisorChoice,
+      "mock" as SupervisorChoice,
+    )
+    .option(
+      "--channels <dev-flag|plugin>",
+      "channel registration mode for --supervisor=claude (ignored for mock)",
+      parseChannelsMode,
+      "dev-flag" as ChannelsMode,
+    )
     .action(async (input: string, opts: DemoCommandOptions) => {
       const isStream = opts.format === "stream";
+      const supervisorFactory = selectSupervisorFactory({
+        supervisor: opts.supervisor,
+        channels: opts.channels,
+      });
       const result = await runDemo({
         input,
-        supervisorFactory: mockSupervisorFactory(),
+        supervisorFactory,
         format: opts.format,
         storeDir: opts.storeDir,
         timeoutMs: opts.timeoutMs,
