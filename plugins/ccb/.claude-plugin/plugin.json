@@ -7,8 +7,8 @@
       "command": "bun",
       "args": ["${CLAUDE_PROJECT_DIR}/packages/mcp-channel/src/bin.ts"],
       "env": {
-        "CCB_BRIDGE_ENDPOINT": "127.0.0.1:18484",
-        "CCB_SESSION_ID": ""
+        "CCB_BRIDGE_ENDPOINT": "${CCB_BRIDGE_ENDPOINT}",
+        "CCB_SESSION_ID": "${CCB_SESSION_ID}"
       }
     }
   },

@@ -177,7 +177,18 @@ export class ClaudeCodeSupervisor implements Supervisor {
       await this.#writeFile(mcpConfigPath, JSON.stringify(config, null, 2), "utf8");
 
       const args = this.#buildClaudeArgs(mcpConfigPath, process.cwd());
-      const launcher = this.#launcherFactory("claude", args);
+      // Propagate the dynamic bridge endpoint + session id through claude's
+      // environment so plugin-mode mcpServers entries that template
+      // `${CCB_BRIDGE_ENDPOINT}` / `${CCB_SESSION_ID}` resolve correctly. In
+      // dev-flag mode these are also picked up by the channel-server child via
+      // --mcp-config; the duplication is harmless.
+      const env: Record<string, string> = {};
+      for (const [k, v] of Object.entries(process.env)) {
+        if (typeof v === "string") env[k] = v;
+      }
+      env.CCB_BRIDGE_ENDPOINT = endpoint.endpoint;
+      env.CCB_SESSION_ID = sessionId;
+      const launcher = this.#launcherFactory("claude", args, { env });
       this.#launcher = launcher;
     } catch (err) {
       await this.#cleanupTempFiles();
@@ -257,13 +268,24 @@ export class ClaudeCodeSupervisor implements Supervisor {
   #buildClaudeArgs(mcpConfigPath: string, cwd: string): string[] {
     const args: string[] = [];
     if (this.#channels === "dev-flag") {
+      // Dev-flag mode: declare the channel server via --mcp-config + the
+      // development channels load flag. --strict-mcp-config keeps the
+      // surface narrow so unrelated MCP servers from the user's settings
+      // don't get picked up.
       args.push("--dangerously-load-development-channels", "server:ccb");
+      args.push("--mcp-config", mcpConfigPath);
+      args.push("--strict-mcp-config");
     } else {
+      // Plugin mode: the channel server is declared by the plugin's
+      // mcpServers entry, which claude loads from the plugin's manifest.
+      // Adding --mcp-config + --strict-mcp-config here would cut that
+      // path off (strict-mcp-config restricts MCP loading to the file we
+      // provide). The plugin's manifest references the dynamic endpoint
+      // via `${CCB_BRIDGE_ENDPOINT}` / `${CCB_SESSION_ID}` substitution,
+      // which we inject into claude's environment before spawn.
       args.push("--channels", "plugin:ccb@ccb-local");
     }
-    args.push("--mcp-config", mcpConfigPath);
     args.push("--add-dir", cwd);
-    args.push("--strict-mcp-config");
     args.push("--allowed-tools", ALLOWED_TOOLS);
     return args;
   }
