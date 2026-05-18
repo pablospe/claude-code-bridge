@@ -33,6 +33,13 @@ export type LauncherFactory = (
   opts?: LaunchOpts,
 ) => LauncherHandle;
 
+/**
+ * Hook for tests to swap `node:fs/promises`'s `writeFile` for an in-process
+ * fake (e.g. to simulate EACCES). Matches the subset of the real signature the
+ * supervisor uses.
+ */
+export type WriteFileFn = (path: string, data: string, encoding: "utf8") => Promise<void>;
+
 export interface ClaudeCodeSupervisorOptions {
   /**
    * Channels mode. Default `"dev-flag"` so fresh clones work without a
@@ -53,6 +60,8 @@ export interface ClaudeCodeSupervisorOptions {
   readonly startTimeoutMs?: number;
   /** Override the launcher (test seam). */
   readonly launcherFactory?: LauncherFactory;
+  /** Override fs writeFile (test seam). */
+  readonly writeFile?: WriteFileFn;
 }
 
 /** Substring the dev-channels gate prints before the confirm. */
@@ -85,6 +94,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
   readonly #channels: ChannelsMode;
   readonly #autoConfirmTimeoutMs: number;
   readonly #launcherFactory: LauncherFactory;
+  readonly #writeFile: WriteFileFn;
 
   #ctx: SupervisorContext | undefined;
   #server: ControlServer | undefined;
@@ -97,6 +107,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
     this.#autoConfirmTimeoutMs = options.autoConfirmTimeoutMs ?? DEFAULT_AUTO_CONFIRM_TIMEOUT_MS;
     this.#launcherFactory =
       options.launcherFactory ?? ((cmd, args, opts) => defaultLaunch(cmd, [...args], opts));
+    this.#writeFile = options.writeFile ?? writeFile;
   }
 
   async start(ctx: SupervisorContext): Promise<void> {
@@ -129,18 +140,21 @@ export class ClaudeCodeSupervisor implements Supervisor {
 
     const tempDir = await mkdtemp(join(tmpdir(), "ccb-claude-mcp-"));
     this.#tempDir = tempDir;
-    const mcpConfigPath = join(tempDir, "mcp.json");
-    const channelBin = resolveChannelServerBinPath();
-    const config = generateMcpConfig({
-      sessionId,
-      endpoint: endpoint.endpoint,
-      command: process.execPath,
-      args: [channelBin],
-    });
-    await writeFile(mcpConfigPath, JSON.stringify(config, null, 2), "utf8");
-
-    const args = this.#buildClaudeArgs(mcpConfigPath, process.cwd());
+    // Any failure after mkdtemp must clean up the temp dir (and the bound
+    // ControlServer) before propagating, so a write-time EACCES / disk-full
+    // does not orphan the dir under tmpdir().
     try {
+      const mcpConfigPath = join(tempDir, "mcp.json");
+      const channelBin = resolveChannelServerBinPath();
+      const config = generateMcpConfig({
+        sessionId,
+        endpoint: endpoint.endpoint,
+        command: process.execPath,
+        args: [channelBin],
+      });
+      await this.#writeFile(mcpConfigPath, JSON.stringify(config, null, 2), "utf8");
+
+      const args = this.#buildClaudeArgs(mcpConfigPath, process.cwd());
       const launcher = this.#launcherFactory("claude", args);
       this.#launcher = launcher;
     } catch (err) {

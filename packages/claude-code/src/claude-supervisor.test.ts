@@ -381,6 +381,37 @@ test("failed start: cleans up the temp .mcp.json file when launch throws", async
   expect(exists).toBe(false);
 });
 
+test("failed start: cleans up the temp dir when writeFile throws after mkdtemp", async () => {
+  // Inject a writeFile that throws to simulate the disk-full / EACCES path.
+  // The supervisor must still rm the temp dir created by mkdtemp before
+  // re-throwing, so the failure does not orphan the dir under tmpdir().
+  const factory = captureLauncherFactory();
+  let capturedDir: string | undefined;
+  const supervisor = new ClaudeCodeSupervisor({
+    channels: "dev-flag",
+    launcherFactory: factory,
+    writeFile: async (path) => {
+      // The path is <tempDir>/mcp.json — capture the parent dir for the
+      // post-rejection existence check.
+      capturedDir = join(path.toString(), "..");
+      throw new Error("EACCES: writeFile failed");
+    },
+  });
+  const ctx: SupervisorContext = {
+    sessionId: FAKE_SESSION_ID,
+    emit: () => {},
+  };
+  await expect(supervisor.start(ctx)).rejects.toThrow(/EACCES: writeFile failed/);
+  if (!capturedDir) throw new Error("temp dir path was not captured");
+  const exists = await stat(capturedDir).then(
+    () => true,
+    () => false,
+  );
+  expect(exists).toBe(false);
+  // The launcher must not have been constructed.
+  expect(liveLaunchers.length).toBe(0);
+});
+
 test("integrates with Bridge: agent.reply lands when control client invokes bridge_reply", async () => {
   // Drive a full Bridge.startSession via a factory so we own the supervisor.
   let captured: ClaudeCodeSupervisor | undefined;
