@@ -8,7 +8,7 @@ This is the durable entry point for the project's milestone documentation. Indiv
 | -- | ----------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
 | M1 | shipped     | [M1.md](./M1.md)               | Protocol shape end-to-end: channels-in / MCP-tools-out, JSONL store, `MockSupervisor`, `ccb` CLI, manual real-claude smoke.      |
 | M2 | shipped     | [M2.md](./M2.md)               | Managed launch: bridge spawns `claude` itself via `node-pty`, supervisor-crash event emission, start timeout, plugin packaging.  |
-| M3 | proposal    | [M3.md](./M3.md)               | Observational hook relay: `PreToolUse` / `PostToolUse` / `Stop` surfaced as `BridgeEvent.tool.event` records; phase 2 adds more. |
+| M3 | locked      | [M3.md](./M3.md)               | Observational hook relay: `PreToolUse` / `PostToolUse` / `Stop` surfaced as `BridgeEvent.tool.event` records; phase 2 adds more. |
 | M4 | proposal (consumer-gated) | [M4.md](./M4.md)   | Permission-prompt routing: surface tool-approval requests to the consumer and route allow / deny decisions back over channels.  |
 
 ## Possible later work (consumer-demand-gated)
