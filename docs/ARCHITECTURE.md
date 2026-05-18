@@ -204,8 +204,7 @@ API's consumer. Channels deliberately deliver complete messages, not tokens.
 ## Where to go next
 
 - [`../README.md`](../README.md) — install, run the demo, full CLI reference.
-- [`SMOKE.md`](./SMOKE.md) — manual real-claude smoke walkthrough (three terminals plus the
-  plugin install variant).
+- [`SMOKE.md`](./SMOKE.md) — real-claude smoke: managed-launch (primary, one command) and the three-terminal manual fallback (with the plugin install variant).
 - [`ROADMAP.md`](./ROADMAP.md) — milestone index; current shipped scope, planned work, and
   proposals.
 - [`../packages/core/src/events.ts`](../packages/core/src/events.ts) — the `BridgeEvent` union

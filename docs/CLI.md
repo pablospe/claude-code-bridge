@@ -11,9 +11,15 @@ Flags:
 - `--format <json|pretty|stream>` (default `pretty`)
 - `--store-dir <path>` (default `.ccb-data`)
 - `--timeout-ms <ms>` (default `10000`)
+- `--supervisor <mock|claude>` (default `mock`) — choose between in-process MockSupervisor and the managed `claude` launch.
+- `--channels <dev-flag|plugin>` (default `dev-flag`, ignored for `--supervisor=mock`) — selects the claude channels mode. `dev-flag` uses `--dangerously-load-development-channels server:ccb`; `plugin` uses `--channels plugin:ccb@ccb-local`.
 
 ```bash
 bun apps/ccb/src/cli.ts demo "ping" --format json
+```
+
+```bash
+bun apps/ccb/src/cli.ts demo --supervisor=claude --channels=dev-flag "ping"
 ```
 
 ## `ccb mcp-config --endpoint <host:port>`
@@ -54,5 +60,5 @@ Flags:
 
 ## Where to go next
 
-- [`SMOKE.md`](./SMOKE.md) — the real-`claude` smoke procedure that uses `ccb serve` (or the `scripts/smoke-manual.sh` helper that wraps it).
+- [`SMOKE.md`](./SMOKE.md) — the real-`claude` smoke procedure (managed-launch single-command path and the three-terminal manual fallback).
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — how the commands fit into the larger bridge / channel-server / claude topology.
