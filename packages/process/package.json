@@ -9,6 +9,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "node-pty": "1.1.0"
+    "@homebridge/node-pty-prebuilt-multiarch": "0.13.1"
   }
 }

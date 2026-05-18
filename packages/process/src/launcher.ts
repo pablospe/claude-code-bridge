@@ -1,8 +1,11 @@
 /**
- * node-pty launcher. This is the only file in the workspace that imports
- * `node-pty` — a native module that may fail to load at runtime if the
- * prebuilt binary is missing or built against an incompatible ABI. Callers
- * that hit that path get a typed `LauncherUnavailableError` with a pointer at
+ * PTY launcher. This is the only file in the workspace that imports the
+ * native PTY module — `@homebridge/node-pty-prebuilt-multiarch`, a community
+ * fork of node-pty that ships prebuilt binaries for darwin, win32, and linux
+ * (including linux-x64 / linux-arm64) so loading does not require a C++
+ * toolchain on the host. The module may still fail to load if the prebuilt
+ * binary's NAPI ABI is incompatible with the running runtime; callers that
+ * hit that path get a typed `LauncherUnavailableError` with a pointer at
  * `docs/SMOKE.md`'s manual fallback.
  */
 
@@ -99,8 +102,8 @@ function loadNodePty(): PtyModule {
   try {
     // `require` (vs dynamic import) keeps `launch()` synchronous and surfaces
     // a native-load failure as a thrown error we can wrap. Bun and Node both
-    // resolve `node-pty` from the package's own node_modules.
-    return require("node-pty") as PtyModule;
+    // resolve the package from the workspace's node_modules.
+    return require("@homebridge/node-pty-prebuilt-multiarch") as PtyModule;
   } catch (err) {
     throw new LauncherUnavailableError(err);
   }

@@ -99,7 +99,7 @@ const fakeNodePty = {
     fakeSpawn(command, args, opts),
 };
 
-mock.module("node-pty", () => fakeNodePty);
+mock.module("@homebridge/node-pty-prebuilt-multiarch", () => fakeNodePty);
 
 // Lazy import after mock.module() registers the override.
 let launch: typeof import("./launcher.ts").launch;
@@ -280,7 +280,7 @@ test("kill is idempotent under concurrent callers (same exit, single escalation 
   // if SIGTERM is also slow). Without the in-flight guard each step would
   // double-fire — e.g. two SIGINTs, two SIGTERMs.
   const signalCounts = new Map<string, number>();
-  mock.module("node-pty", () => ({
+  mock.module("@homebridge/node-pty-prebuilt-multiarch", () => ({
     spawn: (
       command: string,
       args: string[],
@@ -325,14 +325,14 @@ test("kill is idempotent under concurrent callers (same exit, single escalation 
     expect(signalCounts.get("SIGKILL") ?? 0).toBeLessThanOrEqual(1);
   } finally {
     // Restore the working mock for any later tests.
-    mock.module("node-pty", () => fakeNodePty);
+    mock.module("@homebridge/node-pty-prebuilt-multiarch", () => fakeNodePty);
   }
 });
 
 test("LauncherUnavailableError: thrown when node-pty fails to load", async () => {
   // Swap the mocked module to throw on access of `spawn`. Using a getter
   // simulates a require-time failure path.
-  mock.module("node-pty", () => ({
+  mock.module("@homebridge/node-pty-prebuilt-multiarch", () => ({
     get spawn() {
       throw new Error("simulated native load failure");
     },
@@ -357,5 +357,5 @@ test("LauncherUnavailableError: thrown when node-pty fails to load", async () =>
   // The error type from our top-level import should also still be defined.
   expect(LauncherUnavailableError.name).toBe("LauncherUnavailableError");
   // Restore the working mock for any later tests.
-  mock.module("node-pty", () => fakeNodePty);
+  mock.module("@homebridge/node-pty-prebuilt-multiarch", () => fakeNodePty);
 });
