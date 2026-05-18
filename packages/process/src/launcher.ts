@@ -9,6 +9,8 @@
  * `docs/SMOKE.md`'s manual fallback.
  */
 
+import { createRequire } from "node:module";
+
 /** Public error type for the node-pty-unavailable path. */
 export class LauncherUnavailableError extends Error {
   constructor(cause: unknown) {
@@ -98,12 +100,15 @@ function safeKill(term: PtyTerminal, signal: string): void {
   }
 }
 
+// Bun exposes `require` in ESM transparently; Node ESM does not. Build a
+// CJS-compatible require bound to this module's URL so the same `launch()`
+// implementation works under both runtimes. Top-level so the module load
+// itself surfaces a problem (rather than the first `launch()` call).
+const _require = createRequire(import.meta.url);
+
 function loadNodePty(): PtyModule {
   try {
-    // `require` (vs dynamic import) keeps `launch()` synchronous and surfaces
-    // a native-load failure as a thrown error we can wrap. Bun and Node both
-    // resolve the package from the workspace's node_modules.
-    return require("@homebridge/node-pty-prebuilt-multiarch") as PtyModule;
+    return _require("@homebridge/node-pty-prebuilt-multiarch") as PtyModule;
   } catch (err) {
     throw new LauncherUnavailableError(err);
   }
