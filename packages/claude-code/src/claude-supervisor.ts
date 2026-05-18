@@ -67,6 +67,14 @@ export interface ClaudeCodeSupervisorOptions {
 /** Substring the dev-channels gate prints before the confirm. */
 const DEV_CHANNELS_CONFIRM_HINT = "Press Enter to continue";
 const DEFAULT_AUTO_CONFIRM_TIMEOUT_MS = 5_000;
+/**
+ * Sliding-window cap for the auto-confirm scan buffer. A noisy boot (locale
+ * init, debug spam, slow tty redraw) could otherwise grow the buffer
+ * unbounded for the full auto-confirm window. The cap holds 4 KB — comfortably
+ * larger than the hint substring (~30 bytes) so a hint split across two PTY
+ * chunks remains detectable even after the cap kicks in.
+ */
+const AUTO_CONFIRM_BUFFER_MAX = Math.max(4096, DEV_CHANNELS_CONFIRM_HINT.length * 2);
 
 const ALLOWED_TOOLS = "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done";
 
@@ -251,6 +259,13 @@ export class ClaudeCodeSupervisor implements Supervisor {
     const unsubscribe = launcher.onData((chunk) => {
       if (confirmed) return;
       buffer += chunk;
+      // Sliding window: anything older than AUTO_CONFIRM_BUFFER_MAX bytes
+      // cannot still contain the hint substring (the hint is much smaller
+      // than the cap), so trimming earlier bytes is safe and prevents the
+      // buffer from growing without bound on a noisy boot.
+      if (buffer.length > AUTO_CONFIRM_BUFFER_MAX) {
+        buffer = buffer.slice(buffer.length - AUTO_CONFIRM_BUFFER_MAX);
+      }
       if (buffer.includes(DEV_CHANNELS_CONFIRM_HINT)) {
         confirmed = true;
         try {

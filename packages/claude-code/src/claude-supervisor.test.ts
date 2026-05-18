@@ -381,6 +381,44 @@ test("failed start: cleans up the temp .mcp.json file when launch throws", async
   expect(exists).toBe(false);
 });
 
+test("auto-confirm: sliding window keeps the hint detectable after a noisy boot", async () => {
+  // Feed ~50KB of garbage that does not contain the hint substring, then
+  // emit the hint at the very end. Proves the buffer is bounded (no OOM /
+  // unbounded growth) yet still preserves enough trailing context to match
+  // the hint when it finally appears.
+  const { supervisor, launcher, startResult } = await startWithFakeLauncher({
+    channels: "dev-flag",
+  });
+  await startResult;
+  const garbage = "x".repeat(1024);
+  for (let i = 0; i < 50; i++) {
+    launcher.emitData(garbage);
+  }
+  launcher.emitData("Press Enter to continue or Ctrl-C to abort.\r\n");
+  await new Promise((r) => setTimeout(r, 10));
+  expect(launcher.writes).toContain("\n");
+  await supervisor.close(FAKE_SESSION_ID);
+});
+
+test("auto-confirm: hint split across two chunks is still detected after garbage", async () => {
+  // After a noisy boot, the hint substring may arrive split across two PTY
+  // chunks. The sliding window must retain enough trailing context that the
+  // first half is still in the buffer when the second half arrives.
+  const { supervisor, launcher, startResult } = await startWithFakeLauncher({
+    channels: "dev-flag",
+  });
+  await startResult;
+  const garbage = "x".repeat(1024);
+  for (let i = 0; i < 50; i++) {
+    launcher.emitData(garbage);
+  }
+  launcher.emitData("Press Enter to ");
+  launcher.emitData("continue or Ctrl-C to abort.\r\n");
+  await new Promise((r) => setTimeout(r, 10));
+  expect(launcher.writes).toContain("\n");
+  await supervisor.close(FAKE_SESSION_ID);
+});
+
 test("failed start: cleans up the temp dir when writeFile throws after mkdtemp", async () => {
   // Inject a writeFile that throws to simulate the disk-full / EACCES path.
   // The supervisor must still rm the temp dir created by mkdtemp before
