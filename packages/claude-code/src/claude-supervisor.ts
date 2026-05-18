@@ -64,8 +64,15 @@ export interface ClaudeCodeSupervisorOptions {
   readonly writeFile?: WriteFileFn;
 }
 
-/** Substring the dev-channels gate prints before the confirm. */
-const DEV_CHANNELS_CONFIRM_HINT = "Press Enter to continue";
+/**
+ * Substring the dev-channels gate prints before the confirm. Verified
+ * empirically against `claude --dangerously-load-development-channels` in
+ * v2.1.143 — the actual UI shows "Enter to confirm · Esc to cancel" at the
+ * bottom of the dev-channels warning dialog. (The earlier guess of "Press
+ * Enter to continue" never matched and caused managed-launch auto-confirm
+ * to silently no-op.)
+ */
+const DEV_CHANNELS_CONFIRM_HINT = "Enter to confirm";
 const DEFAULT_AUTO_CONFIRM_TIMEOUT_MS = 5_000;
 /**
  * Sliding-window cap for the auto-confirm scan buffer. A noisy boot (locale
@@ -309,15 +316,41 @@ export class ClaudeCodeSupervisor implements Supervisor {
 
   /**
    * Buffer PTY output and write `\n` once the dev-channels confirm hint
-   * appears. Bounded by `autoConfirmTimeoutMs`: if the hint never appears in
-   * that window the supervisor does NOT send `\n` (the safer failure mode if
-   * claude's warning text drifts).
+   * appears. Bounded by `autoConfirmTimeoutMs`.
+   *
+   * Two write paths so a runtime that does not surface PTY `onData` callbacks
+   * does not deadlock the boot:
+   *
+   * 1. Fast path: as soon as the hint substring appears in the buffer, write
+   *    `\n` and stop scanning. This is the common case under Node.
+   * 2. Fallback: at `autoConfirmTimeoutMs`, if the hint never appeared, write
+   *    `\n` blindly anyway. The fallback covers runtimes where `onData` does
+   *    not fire reliably for PTY children (Bun's NAPI compat layer at the
+   *    time of writing); it also tolerates upstream warning-text drift. Risk
+   *    is bounded: if claude already booted past the prompt, an extra `\n`
+   *    submits an empty message which produces at most one stray turn — no
+   *    data loss, no crash.
    */
   #installAutoConfirmScanner(): void {
     const launcher = this.#launcher;
     if (!launcher) return;
     let confirmed = false;
     let buffer = "";
+    const writeConfirm = (): void => {
+      if (confirmed) return;
+      confirmed = true;
+      try {
+        // \r is the on-the-wire Enter keypress for a TTY. claude's TUI reads
+        // raw keystrokes (no line discipline), so \n is interpreted literally
+        // and does NOT advance the dev-channels warning. \r is the correct
+        // representation of the key the warning's "Enter to confirm" hint
+        // refers to.
+        launcher.write("\r");
+      } catch {
+        /* swallow: PTY may have raced us to closed. */
+      }
+      cleanup();
+    };
     const unsubscribe = launcher.onData((chunk) => {
       if (confirmed) return;
       buffer += chunk;
@@ -329,20 +362,12 @@ export class ClaudeCodeSupervisor implements Supervisor {
         buffer = buffer.slice(buffer.length - AUTO_CONFIRM_BUFFER_MAX);
       }
       if (buffer.includes(DEV_CHANNELS_CONFIRM_HINT)) {
-        confirmed = true;
-        try {
-          launcher.write("\n");
-        } catch {
-          /* swallow: PTY may have raced us to closed. */
-        }
-        cleanup();
+        writeConfirm();
       }
     });
     const timer = setTimeout(() => {
-      if (confirmed) return;
-      // Window elapsed; assume the warning text drifted or claude already
-      // booted past the prompt. Stay our hand.
-      cleanup();
+      // Window elapsed; write blindly. See doc comment above for rationale.
+      writeConfirm();
     }, this.#autoConfirmTimeoutMs);
     (timer as { unref?: () => void }).unref?.();
     const cleanup = (): void => {

@@ -434,7 +434,7 @@ test("--mcp-config points at a temp .mcp.json file with absolute Bun + bin.ts pa
   expect(stillThere).toBe(false);
 });
 
-test("auto-confirm: dev-flag mode writes \\n after the 'Press Enter to continue' hint", async () => {
+test("auto-confirm: dev-flag mode writes \\n after the 'Enter to confirm' hint", async () => {
   const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
     channels: "dev-flag",
   });
@@ -443,10 +443,10 @@ test("auto-confirm: dev-flag mode writes \\n after the 'Press Enter to continue'
   // prompt; the supervisor's scanner should fire after the hint substring
   // appears.
   launcher.emitData("Loading development channels: server:ccb\r\n");
-  launcher.emitData("Press Enter to continue or Ctrl-C to abort.\r\n");
+  launcher.emitData("Enter to confirm · Esc to cancel\r\n");
   // Let the microtask queue flush.
   await new Promise((r) => setTimeout(r, 10));
-  expect(launcher.writes).toContain("\n");
+  expect(launcher.writes).toContain("\r");
   await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
@@ -456,15 +456,20 @@ test("auto-confirm: plugin mode never writes \\n even if the hint appears", asyn
     channels: "plugin",
   });
   await startResult;
-  launcher.emitData("Press Enter to continue or Ctrl-C to abort.\r\n");
+  launcher.emitData("Enter to confirm · Esc to cancel\r\n");
   await new Promise((r) => setTimeout(r, 10));
   // Plugin mode does not subscribe an auto-confirm scanner; no Enter sent.
-  expect(launcher.writes).not.toContain("\n");
+  expect(launcher.writes).not.toContain("\r");
   await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
 
-test("auto-confirm: scan times out cleanly when the hint never appears", async () => {
+test("auto-confirm: writes \\n blindly after the timeout when the hint never appears", async () => {
+  // The fallback covers runtimes where PTY onData callbacks do not fire
+  // (e.g. Bun's NAPI gap for node-pty at the time of writing). It also
+  // tolerates upstream warning-text drift. The risk of misfire is bounded:
+  // if claude already booted past the prompt, an extra \n submits an empty
+  // message — at most one stray turn, no crash.
   const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
     channels: "dev-flag",
     autoConfirmTimeoutMs: 30,
@@ -473,7 +478,7 @@ test("auto-confirm: scan times out cleanly when the hint never appears", async (
   // Emit some output that doesn't match the hint.
   launcher.emitData("some unrelated banner\r\n");
   await new Promise((r) => setTimeout(r, 80));
-  expect(launcher.writes).not.toContain("\n");
+  expect(launcher.writes).toContain("\r");
   await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
@@ -587,9 +592,9 @@ test("auto-confirm: sliding window keeps the hint detectable after a noisy boot"
   for (let i = 0; i < 50; i++) {
     launcher.emitData(garbage);
   }
-  launcher.emitData("Press Enter to continue or Ctrl-C to abort.\r\n");
+  launcher.emitData("Enter to confirm · Esc to cancel\r\n");
   await new Promise((r) => setTimeout(r, 10));
-  expect(launcher.writes).toContain("\n");
+  expect(launcher.writes).toContain("\r");
   await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
@@ -606,10 +611,10 @@ test("auto-confirm: hint split across two chunks is still detected after garbage
   for (let i = 0; i < 50; i++) {
     launcher.emitData(garbage);
   }
-  launcher.emitData("Press Enter to ");
-  launcher.emitData("continue or Ctrl-C to abort.\r\n");
+  launcher.emitData("Enter to ");
+  launcher.emitData("confirm · Esc to cancel\r\n");
   await new Promise((r) => setTimeout(r, 10));
-  expect(launcher.writes).toContain("\n");
+  expect(launcher.writes).toContain("\r");
   await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
