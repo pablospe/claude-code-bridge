@@ -1,7 +1,9 @@
-import { Bridge, type BridgeEvent, type SupervisorFactory } from "@ccb/core";
+import { Bridge, type BridgeEvent, type BridgeOptions, type SupervisorFactory } from "@ccb/core";
 import { type Formatter, formatJson, formatPretty } from "./format.ts";
 
 export type DemoFormat = "json" | "pretty" | "stream";
+
+export type DemoBridgeFactory = (options: BridgeOptions) => Bridge;
 
 export interface DemoOptions {
   readonly input: string;
@@ -10,12 +12,22 @@ export interface DemoOptions {
   readonly storeDir: string;
   readonly timeoutMs: number;
   /**
+   * Optional upper bound for `supervisor.start` forwarded to the Bridge as
+   * `startTimeoutMs`. When omitted the Bridge applies its own default.
+   */
+  readonly startTimeoutMs?: number;
+  /**
    * Optional per-event sink invoked as each event arrives with the formatted
    * line. Tests omit this to collect events silently.
    */
   readonly onEvent?: (event: BridgeEvent, formatted: string) => void;
   /** Optional formatter override; defaults to the format-driven choice. */
   readonly formatter?: Formatter;
+  /**
+   * Optional Bridge constructor seam. Defaults to `new Bridge(options)`; tests
+   * inject a spy to assert which options are forwarded.
+   */
+  readonly bridgeFactory?: DemoBridgeFactory;
 }
 
 export interface DemoResult {
@@ -55,10 +67,13 @@ function raceWithTimeout<T>(promise: Promise<T>, timeoutMs: number, label: strin
 
 export async function runDemo(opts: DemoOptions): Promise<DemoResult> {
   const formatter = opts.formatter ?? pickFormatter(opts.format);
-  const bridge = new Bridge({
+  const bridgeOptions: BridgeOptions = {
     storeDir: opts.storeDir,
     supervisorFactory: opts.supervisorFactory,
-  });
+    ...(opts.startTimeoutMs !== undefined ? { startTimeoutMs: opts.startTimeoutMs } : {}),
+  };
+  const bridgeFactory = opts.bridgeFactory ?? ((o) => new Bridge(o));
+  const bridge = bridgeFactory(bridgeOptions);
 
   const handle = await bridge.startSession({});
   const sessionId = handle.id;

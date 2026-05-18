@@ -59,6 +59,20 @@ test("ccb demo --help lists supported flags", async () => {
   expect(stdout).toMatch(/--timeout-ms/);
   expect(stdout).toMatch(/--supervisor <mock\|claude>/);
   expect(stdout).toMatch(/--channels <dev-flag\|plugin>/);
+  expect(stdout).toMatch(/--start-timeout-ms <ms>/);
+});
+
+test("ccb demo --start-timeout-ms=bogus exits non-zero with a clear error", async () => {
+  const { exitCode, stderr } = await runCli([
+    "demo",
+    "hi",
+    "--start-timeout-ms",
+    "bogus",
+    "--store-dir",
+    storeDir,
+  ]);
+  expect(exitCode).not.toBe(0);
+  expect(stderr).toMatch(/start-timeout-ms/i);
 });
 
 test("ccb demo --supervisor=bogus exits non-zero with a clear error", async () => {
@@ -87,6 +101,26 @@ test("ccb demo --channels=bogus exits non-zero with a clear error", async () => 
   expect(exitCode).not.toBe(0);
   expect(stderr).toMatch(/channels/i);
   expect(stderr.toLowerCase()).toMatch(/dev-flag|plugin/);
+});
+
+test("ccb demo --start-timeout-ms 12345 succeeds with the mock supervisor", async () => {
+  const { exitCode, stderr } = await runCli([
+    "demo",
+    "hi",
+    "--supervisor",
+    "mock",
+    "--format",
+    "json",
+    "--store-dir",
+    storeDir,
+    "--timeout-ms",
+    "3000",
+    "--start-timeout-ms",
+    "12345",
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(`ccb demo exited ${exitCode}; stderr=${stderr}`);
+  }
 });
 
 test("ccb demo --supervisor=mock preserves default echo behavior", async () => {

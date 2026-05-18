@@ -36,6 +36,7 @@ interface DemoCommandOptions {
   readonly format: DemoFormat;
   readonly storeDir: string;
   readonly timeoutMs: number;
+  readonly startTimeoutMs?: number;
   readonly supervisor: SupervisorChoice;
   readonly channels: ChannelsMode;
 }
@@ -113,6 +114,11 @@ export function buildProgram(): Command {
       10_000,
     )
     .option(
+      "--start-timeout-ms <ms>",
+      "upper bound for supervisor.start; forwarded to Bridge.startTimeoutMs (default: bridge default of 30000)",
+      parsePositiveInt,
+    )
+    .option(
       "--supervisor <mock|claude>",
       "supervisor to drive the bridge: mock (default) or claude (managed launch)",
       parseSupervisorChoice,
@@ -136,6 +142,7 @@ export function buildProgram(): Command {
         format: opts.format,
         storeDir: opts.storeDir,
         timeoutMs: opts.timeoutMs,
+        startTimeoutMs: opts.startTimeoutMs,
         onEvent: isStream ? (_ev, line) => process.stdout.write(`${line}\n`) : undefined,
       });
       if (!isStream) {

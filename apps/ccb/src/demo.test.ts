@@ -3,7 +3,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mockSupervisorFactory } from "@ccb/claude-code";
-import type { Supervisor, SupervisorContext, SupervisorFactory } from "@ccb/core";
+import {
+  Bridge,
+  type BridgeOptions,
+  type Supervisor,
+  type SupervisorContext,
+  type SupervisorFactory,
+} from "@ccb/core";
 import { runDemo } from "./demo.ts";
 
 let storeDir: string;
@@ -190,6 +196,41 @@ test("runDemo returns within ~100ms when supervisor emits only agent.done", asyn
   const types = result.events.map((e) => e.type);
   expect(types).toContain("agent.done");
   expect(types.at(-1)).toBe("session.ended");
+});
+
+test("runDemo forwards startTimeoutMs to the Bridge constructor when provided", async () => {
+  const seen: BridgeOptions[] = [];
+  await runDemo({
+    input: "hello",
+    supervisorFactory: mockSupervisorFactory(),
+    format: "json",
+    storeDir,
+    timeoutMs: 2000,
+    startTimeoutMs: 12345,
+    bridgeFactory: (o) => {
+      seen.push(o);
+      return new Bridge(o);
+    },
+  });
+  expect(seen.length).toBe(1);
+  expect(seen[0]?.startTimeoutMs).toBe(12345);
+});
+
+test("runDemo omits startTimeoutMs from BridgeOptions when not provided", async () => {
+  const seen: BridgeOptions[] = [];
+  await runDemo({
+    input: "hello",
+    supervisorFactory: mockSupervisorFactory(),
+    format: "json",
+    storeDir,
+    timeoutMs: 2000,
+    bridgeFactory: (o) => {
+      seen.push(o);
+      return new Bridge(o);
+    },
+  });
+  expect(seen.length).toBe(1);
+  expect(seen[0]?.startTimeoutMs).toBeUndefined();
 });
 
 test("runDemo stream mode delivers events between final reply and session.ended", async () => {
