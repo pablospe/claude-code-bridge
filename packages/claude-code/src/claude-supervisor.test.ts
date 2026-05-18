@@ -9,6 +9,7 @@ import {
   CRASH_SESSION_ENDED_REASON,
   type SupervisorContext,
 } from "@ccb/core";
+import type { ControlClient } from "@ccb/mcp-channel";
 import type { KillOpts, LauncherHandle, LaunchOpts } from "@ccb/process";
 import { ClaudeCodeSupervisor } from "./claude-supervisor.ts";
 
@@ -164,6 +165,13 @@ async function startWithFakeLauncher(opts: {
   emitted: BridgeEvent[];
   launcher: FakeLauncher;
   startResult: Promise<void>;
+  /**
+   * Real ControlClient connected to the supervisor's ControlServer; its
+   * `connect()` fired the synthetic `hello` that clears the start gate.
+   * Tests must close this client before closing the supervisor so the
+   * cooperative-shutdown path is exercised (no peer-close crash events).
+   */
+  helloClient: ControlClient;
 }> {
   const factory = captureLauncherFactory();
   const supervisor = new ClaudeCodeSupervisor({
@@ -179,13 +187,135 @@ async function startWithFakeLauncher(opts: {
       emitted.push(event);
     },
   };
-  // Drive start to completion so the launcher has been constructed.
+  // Kick off start; it now blocks on the channel-server hello.
   const startResult = supervisor.start(ctx);
+  // Wait until the ControlServer has bound, then connect a real client. The
+  // client's connect() sends a `hello` which clears the supervisor's gate.
+  await waitFor(() => supervisor.serverEndpoint !== undefined);
+  const ep = supervisor.serverEndpoint;
+  if (!ep) throw new Error("serverEndpoint not set");
+  const { ControlClient: ControlClientCtor } = await import("@ccb/mcp-channel");
+  const helloClient = new ControlClientCtor({
+    endpoint: ep.endpoint,
+    sessionId: FAKE_SESSION_ID,
+    onDeliver: () => undefined,
+  });
+  await helloClient.connect();
   await startResult;
   const launcher = liveLaunchers[0];
   if (!launcher) throw new Error("launcher was not created");
-  return { supervisor, ctx, emitted, launcher, startResult };
+  return { supervisor, ctx, emitted, launcher, startResult, helloClient };
 }
+
+test("supervisor.start blocks until the channel server connects and says hello", async () => {
+  // Closes the managed-launch race: without this gate, sendMessage races
+  // ahead of the channel client and fails with "no connected client". The
+  // gate makes start() resolve only after a `hello` arrives for this session.
+  const factory = captureLauncherFactory();
+  const supervisor = new ClaudeCodeSupervisor({
+    channels: "dev-flag",
+    launcherFactory: factory,
+  });
+  const ctx: SupervisorContext = {
+    sessionId: FAKE_SESSION_ID,
+    emit: () => {},
+  };
+  let resolved = false;
+  const startPromise = supervisor
+    .start(ctx)
+    .then(() => {
+      resolved = true;
+    })
+    .catch((err) => {
+      throw err;
+    });
+  // The ControlServer has bound (server.listen returned) but no client has
+  // connected yet -- start() must remain pending.
+  await waitFor(() => supervisor.serverEndpoint !== undefined);
+  await new Promise((r) => setTimeout(r, 100));
+  expect(resolved).toBe(false);
+  // Now connect a real client; its synthetic `hello` clears the gate.
+  const ep = supervisor.serverEndpoint;
+  if (!ep) throw new Error("serverEndpoint not set");
+  const { ControlClient } = await import("@ccb/mcp-channel");
+  const client = new ControlClient({
+    endpoint: ep.endpoint,
+    sessionId: FAKE_SESSION_ID,
+    onDeliver: () => undefined,
+  });
+  await client.connect();
+  await startPromise;
+  expect(resolved).toBe(true);
+  await client.close();
+  await supervisor.close(FAKE_SESSION_ID);
+});
+
+test("supervisor.start does not resolve on a hello with the wrong sessionId", async () => {
+  // The gate is keyed on the supervisor's session id; a hello carrying any
+  // other id must be ignored (and ControlServer rejects mismatched duplicate
+  // sessions on its own — that is not the concern here).
+  const factory = captureLauncherFactory();
+  const supervisor = new ClaudeCodeSupervisor({
+    channels: "dev-flag",
+    launcherFactory: factory,
+  });
+  const ctx: SupervisorContext = {
+    sessionId: FAKE_SESSION_ID,
+    emit: () => {},
+  };
+  let resolved = false;
+  const startPromise = supervisor.start(ctx).then(() => {
+    resolved = true;
+  });
+  await waitFor(() => supervisor.serverEndpoint !== undefined);
+  const ep = supervisor.serverEndpoint;
+  if (!ep) throw new Error("serverEndpoint not set");
+  const { ControlClient } = await import("@ccb/mcp-channel");
+  // Wrong session id -- supervisor must still be waiting.
+  const wrong = new ControlClient({
+    endpoint: ep.endpoint,
+    sessionId: "ffffffff-ffff-ffff-ffff-ffffffffffff",
+    onDeliver: () => undefined,
+  });
+  await wrong.connect();
+  await new Promise((r) => setTimeout(r, 100));
+  expect(resolved).toBe(false);
+  // Correct session id clears the gate.
+  const right = new ControlClient({
+    endpoint: ep.endpoint,
+    sessionId: FAKE_SESSION_ID,
+    onDeliver: () => undefined,
+  });
+  await right.connect();
+  await startPromise;
+  expect(resolved).toBe(true);
+  await wrong.close();
+  await right.close();
+  await supervisor.close(FAKE_SESSION_ID);
+});
+
+test("Bridge.startTimeoutMs aborts a hello-less start cleanly", async () => {
+  // The supervisor itself does not bound the hello wait -- the bridge does,
+  // via startTimeoutMs. With no client connecting, bridge.startSession must
+  // reject with StartTimeoutError and the failed-start cleanup path must run
+  // (temp dir removed, no session leaked).
+  const { Bridge, StartTimeoutError } = await import("@ccb/core");
+  const factory = captureLauncherFactory();
+  const bridge = new Bridge({
+    storeDir,
+    startTimeoutMs: 200,
+    supervisorFactory: () =>
+      new ClaudeCodeSupervisor({
+        channels: "dev-flag",
+        launcherFactory: factory,
+      }),
+  });
+  await expect(bridge.startSession({})).rejects.toBeInstanceOf(StartTimeoutError);
+  // Launcher was constructed before the gate; the rig's afterEach hook will
+  // resolveExit() on it, but the bridge must have already torn the session
+  // down -- subsequent events() for any uuid returns an empty iterable.
+  expect(liveLaunchers.length).toBe(1);
+});
 
 test("serverEndpoint exposes the bound ControlServer address after start, undefined before/after", async () => {
   // Test rigs need to discover the supervisor's randomly-bound ControlServer
@@ -228,7 +358,7 @@ test("serverEndpoint exposes the bound ControlServer address after start, undefi
 });
 
 test("start in dev-flag mode launches claude with the documented flag set", async () => {
-  const { supervisor, launcher, startResult } = await startWithFakeLauncher({
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
     channels: "dev-flag",
   });
   await startResult;
@@ -248,11 +378,12 @@ test("start in dev-flag mode launches claude with the documented flag set", asyn
   );
   // The plugin flag must NOT appear in dev-flag mode.
   expect(args).not.toContain("--channels");
+  await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
 
 test("start in plugin mode replaces the dev flag with --channels plugin:ccb@ccb-local", async () => {
-  const { supervisor, launcher, startResult } = await startWithFakeLauncher({
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
     channels: "plugin",
   });
   await startResult;
@@ -261,11 +392,12 @@ test("start in plugin mode replaces the dev flag with --channels plugin:ccb@ccb-
   expect(args).toContain("--channels");
   const idx = args.indexOf("--channels");
   expect(args[idx + 1]).toBe("plugin:ccb@ccb-local");
+  await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
 
 test("--mcp-config points at a temp .mcp.json file with absolute Bun + bin.ts paths", async () => {
-  const { supervisor, launcher, startResult } = await startWithFakeLauncher({});
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({});
   await startResult;
   const args = [...launcher.args];
   const cfgIdx = args.indexOf("--mcp-config");
@@ -292,6 +424,7 @@ test("--mcp-config points at a temp .mcp.json file with absolute Bun + bin.ts pa
   expect(json.mcpServers.ccb.args[0]).toMatch(/packages\/mcp-channel\/src\/bin\.ts$/);
   expect(json.mcpServers.ccb.env.CCB_SESSION_ID).toBe(FAKE_SESSION_ID);
   expect(json.mcpServers.ccb.env.CCB_BRIDGE_ENDPOINT).toMatch(/^127\.0\.0\.1:\d+$/);
+  await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
   // Temp file is cleaned up on close.
   const stillThere = await stat(cfgPath).then(
@@ -302,7 +435,7 @@ test("--mcp-config points at a temp .mcp.json file with absolute Bun + bin.ts pa
 });
 
 test("auto-confirm: dev-flag mode writes \\n after the 'Press Enter to continue' hint", async () => {
-  const { supervisor, launcher, startResult } = await startWithFakeLauncher({
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
     channels: "dev-flag",
   });
   await startResult;
@@ -314,11 +447,12 @@ test("auto-confirm: dev-flag mode writes \\n after the 'Press Enter to continue'
   // Let the microtask queue flush.
   await new Promise((r) => setTimeout(r, 10));
   expect(launcher.writes).toContain("\n");
+  await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
 
 test("auto-confirm: plugin mode never writes \\n even if the hint appears", async () => {
-  const { supervisor, launcher, startResult } = await startWithFakeLauncher({
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
     channels: "plugin",
   });
   await startResult;
@@ -326,11 +460,12 @@ test("auto-confirm: plugin mode never writes \\n even if the hint appears", asyn
   await new Promise((r) => setTimeout(r, 10));
   // Plugin mode does not subscribe an auto-confirm scanner; no Enter sent.
   expect(launcher.writes).not.toContain("\n");
+  await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
 
 test("auto-confirm: scan times out cleanly when the hint never appears", async () => {
-  const { supervisor, launcher, startResult } = await startWithFakeLauncher({
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
     channels: "dev-flag",
     autoConfirmTimeoutMs: 30,
   });
@@ -339,6 +474,7 @@ test("auto-confirm: scan times out cleanly when the hint never appears", async (
   launcher.emitData("some unrelated banner\r\n");
   await new Promise((r) => setTimeout(r, 80));
   expect(launcher.writes).not.toContain("\n");
+  await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
 
@@ -359,30 +495,26 @@ test("sendMessage forwards through the control server, not the PTY", async () =>
       emitted.push(event);
     },
   };
-  await supervisor.start(ctx);
+  // start() now blocks on the channel-server hello, so we must connect the
+  // synthetic client BEFORE awaiting the promise.
+  const startPromise = supervisor.start(ctx);
+  await waitFor(() => supervisor.serverEndpoint !== undefined);
   const launcher = liveLaunchers[0];
   if (!launcher) throw new Error("launcher missing");
-
-  // Read the mcp-config to grab the endpoint the supervisor bound to.
-  const args = [...launcher.args];
-  const cfgIdx = args.indexOf("--mcp-config");
-  const cfgPath = args[cfgIdx + 1];
-  if (!cfgPath) throw new Error("missing --mcp-config value");
-  const json = JSON.parse(await readFile(cfgPath, "utf8")) as {
-    mcpServers: { ccb: { env: { CCB_BRIDGE_ENDPOINT: string } } };
-  };
-  const endpoint = json.mcpServers.ccb.env.CCB_BRIDGE_ENDPOINT;
+  const ep = supervisor.serverEndpoint;
+  if (!ep) throw new Error("serverEndpoint not set");
 
   const { ControlClient } = await import("@ccb/mcp-channel");
   const delivered: Array<{ content: string; messageId?: string }> = [];
   const client = new ControlClient({
-    endpoint,
+    endpoint: ep.endpoint,
     sessionId: FAKE_SESSION_ID,
     onDeliver: async (content, opts) => {
       delivered.push({ content, ...(opts.messageId ? { messageId: opts.messageId } : {}) });
     },
   });
   await client.connect();
+  await startPromise;
 
   await supervisor.sendMessage(FAKE_SESSION_ID, "m1", "hello over the wire");
   // Give the client's read loop a turn.
@@ -397,18 +529,20 @@ test("sendMessage forwards through the control server, not the PTY", async () =>
 });
 
 test("interrupt delivers a single SIGINT to the launcher (no SIGTERM)", async () => {
-  const { supervisor, launcher, startResult } = await startWithFakeLauncher({});
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({});
   await startResult;
   await supervisor.interrupt(FAKE_SESSION_ID);
   expect(launcher.signals).toEqual(["SIGINT"]);
   // interrupt must not trigger any kill ladder.
   expect(launcher.kills).toEqual([]);
+  await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
 
 test("close drives the teardown ladder via launcher.kill('graceful',{gracefulInput:'/exit\\n'})", async () => {
-  const { supervisor, launcher, startResult } = await startWithFakeLauncher({});
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({});
   await startResult;
+  await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
   expect(launcher.kills.length).toBe(1);
   const k = launcher.kills[0];
@@ -445,7 +579,7 @@ test("auto-confirm: sliding window keeps the hint detectable after a noisy boot"
   // emit the hint at the very end. Proves the buffer is bounded (no OOM /
   // unbounded growth) yet still preserves enough trailing context to match
   // the hint when it finally appears.
-  const { supervisor, launcher, startResult } = await startWithFakeLauncher({
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
     channels: "dev-flag",
   });
   await startResult;
@@ -456,6 +590,7 @@ test("auto-confirm: sliding window keeps the hint detectable after a noisy boot"
   launcher.emitData("Press Enter to continue or Ctrl-C to abort.\r\n");
   await new Promise((r) => setTimeout(r, 10));
   expect(launcher.writes).toContain("\n");
+  await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
 
@@ -463,7 +598,7 @@ test("auto-confirm: hint split across two chunks is still detected after garbage
   // After a noisy boot, the hint substring may arrive split across two PTY
   // chunks. The sliding window must retain enough trailing context that the
   // first half is still in the buffer when the second half arrives.
-  const { supervisor, launcher, startResult } = await startWithFakeLauncher({
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
     channels: "dev-flag",
   });
   await startResult;
@@ -475,6 +610,7 @@ test("auto-confirm: hint split across two chunks is still detected after garbage
   launcher.emitData("continue or Ctrl-C to abort.\r\n");
   await new Promise((r) => setTimeout(r, 10));
   expect(launcher.writes).toContain("\n");
+  await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
 
@@ -512,10 +648,12 @@ test("failed start: cleans up the temp dir when writeFile throws after mkdtemp",
 test("integrates with Bridge: agent.reply lands when control client invokes bridge_reply", async () => {
   // Drive a full Bridge.startSession via a factory so we own the supervisor.
   let captured: ClaudeCodeSupervisor | undefined;
+  let sessionId: string | undefined;
   const factory = captureLauncherFactory();
   const bridge = new Bridge({
     storeDir,
-    supervisorFactory: () => {
+    supervisorFactory: (id) => {
+      sessionId = id;
       const sup = new ClaudeCodeSupervisor({
         channels: "dev-flag",
         launcherFactory: factory,
@@ -524,29 +662,25 @@ test("integrates with Bridge: agent.reply lands when control client invokes brid
       return sup;
     },
   });
-  const { id } = await bridge.startSession({});
+  // startSession now blocks until the channel-server hello arrives. Spawn it
+  // and connect a synthetic client while it is in flight.
+  const startSessionPromise = bridge.startSession({});
+  await waitFor(() => captured?.serverEndpoint !== undefined);
   if (!captured) throw new Error("supervisor was not created");
-
-  const launcher = liveLaunchers[0];
-  if (!launcher) throw new Error("launcher missing");
-  const args = [...launcher.args];
-  const cfgIdx = args.indexOf("--mcp-config");
-  const cfgPath = args[cfgIdx + 1];
-  if (!cfgPath) throw new Error("missing --mcp-config value");
-  const json = JSON.parse(await readFile(cfgPath, "utf8")) as {
-    mcpServers: { ccb: { env: { CCB_BRIDGE_ENDPOINT: string } } };
-  };
-  const endpoint = json.mcpServers.ccb.env.CCB_BRIDGE_ENDPOINT;
+  if (!sessionId) throw new Error("sessionId not captured");
+  const ep = captured.serverEndpoint;
+  if (!ep) throw new Error("serverEndpoint not set");
 
   const { ControlClient } = await import("@ccb/mcp-channel");
   const client = new ControlClient({
-    endpoint,
-    sessionId: id,
+    endpoint: ep.endpoint,
+    sessionId,
     onDeliver: async () => {
       // Drop incoming user messages; the bridge does not need them echoed.
     },
   });
   await client.connect();
+  const { id } = await startSessionPromise;
 
   // Simulate the agent invoking bridge_reply from the channel server side.
   await client.sendTool("bridge_reply", {
@@ -569,27 +703,36 @@ test("integrates with Bridge: agent.reply lands when control client invokes brid
 test("peer-close: synthesizes crash event pair when the channel client drops", async () => {
   // Drive the supervisor through a Bridge so the bridge consumes the emitted
   // crash events and writes them to the store / live event stream.
+  let captured: ClaudeCodeSupervisor | undefined;
+  let sessionId: string | undefined;
   const factory = captureLauncherFactory();
   const bridge = new Bridge({
     storeDir,
-    supervisorFactory: () =>
-      new ClaudeCodeSupervisor({
+    supervisorFactory: (id) => {
+      sessionId = id;
+      const sup = new ClaudeCodeSupervisor({
         channels: "dev-flag",
         launcherFactory: factory,
-      }),
+      });
+      captured = sup;
+      return sup;
+    },
   });
-  const { id } = await bridge.startSession({});
+  // startSession blocks on hello; connect the client mid-flight.
+  const startSessionPromise = bridge.startSession({});
+  await waitFor(() => captured?.serverEndpoint !== undefined);
+  if (!captured || !sessionId) throw new Error("supervisor/session not captured");
+  const ep = captured.serverEndpoint;
+  if (!ep) throw new Error("serverEndpoint not set");
 
-  const launcher = liveLaunchers[0];
-  if (!launcher) throw new Error("launcher missing");
-  const args = [...launcher.args];
-  const cfgIdx = args.indexOf("--mcp-config");
-  const cfgPath = args[cfgIdx + 1];
-  if (!cfgPath) throw new Error("missing --mcp-config value");
-  const json = JSON.parse(await readFile(cfgPath, "utf8")) as {
-    mcpServers: { ccb: { env: { CCB_BRIDGE_ENDPOINT: string } } };
-  };
-  const endpoint = json.mcpServers.ccb.env.CCB_BRIDGE_ENDPOINT;
+  const { ControlClient } = await import("@ccb/mcp-channel");
+  const client = new ControlClient({
+    endpoint: ep.endpoint,
+    sessionId,
+    onDeliver: () => undefined,
+  });
+  await client.connect();
+  const { id } = await startSessionPromise;
 
   // Subscribe to the live event stream so we can assert it terminates cleanly.
   const liveEvents: BridgeEvent[] = [];
@@ -599,14 +742,6 @@ test("peer-close: synthesizes crash event pair when the channel client drops", a
       if (ev.type === "session.ended") break;
     }
   })();
-
-  const { ControlClient } = await import("@ccb/mcp-channel");
-  const client = new ControlClient({
-    endpoint,
-    sessionId: id,
-    onDeliver: () => undefined,
-  });
-  await client.connect();
 
   // Simulate the channel-server peer dropping its socket (kill -9 / crash).
   await client.close();
@@ -642,11 +777,14 @@ test("peer-close: synthesizes crash event pair when the channel client drops", a
 });
 
 test("cooperative close: does NOT synthesize crash events", async () => {
-  const { supervisor, ctx, emitted } = await startWithFakeLauncher({});
+  const { supervisor, ctx, emitted, helloClient } = await startWithFakeLauncher({});
   // Sanity: no crash events emitted at start.
   expect(emitted.some((e) => e.type === "agent.done" && e.reason === CRASH_AGENT_DONE_REASON)).toBe(
     false,
   );
+  // Close the synthetic client first so the supervisor.close path is the
+  // cooperative shutdown (not a peer-close driven by an orphaned client).
+  await helloClient.close();
   await supervisor.close(ctx.sessionId);
   // After cooperative close, the supervisor must not synthesize crash events.
   // The ControlServer's own peer-close suppression (driven by its #closing

@@ -198,6 +198,13 @@ export class ClaudeCodeSupervisor implements Supervisor {
     if (this.#channels === "dev-flag") {
       this.#installAutoConfirmScanner();
     }
+    // Block until the channel server (spawned by claude after it consumes the
+    // generated mcp.json) connects back and identifies itself for this
+    // session. Without this gate, callers race ahead of the connection and
+    // sendMessage rejects with "no connected client". The wait itself is
+    // unbounded inside the supervisor; Bridge.startTimeoutMs is the single
+    // bound on supervisor.start at the layer above.
+    await this.#waitForChannelHello(sessionId, server);
   }
 
   async sendMessage(sessionId: string, messageId: string, content: string): Promise<void> {
@@ -259,6 +266,23 @@ export class ClaudeCodeSupervisor implements Supervisor {
     args.push("--strict-mcp-config");
     args.push("--allowed-tools", ALLOWED_TOOLS);
     return args;
+  }
+
+  /**
+   * Resolve once the channel server's first `hello` for this session arrives
+   * at the ControlServer. Returns a promise that never rejects on its own; the
+   * caller (`Bridge.startSession` via `startTimeoutMs`) is the single source of
+   * truth for bounding this wait so the timeout story stays in one place.
+   */
+  #waitForChannelHello(sessionId: string, server: ControlServer): Promise<void> {
+    return new Promise((resolve) => {
+      const onHello = (sid: string): void => {
+        if (sid !== sessionId) return;
+        server.off("hello", onHello);
+        resolve();
+      };
+      server.on("hello", onHello);
+    });
   }
 
   /**
