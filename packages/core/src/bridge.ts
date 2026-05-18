@@ -109,6 +109,12 @@ export class Bridge implements ClaudeCodeBridge {
     this.#storeFactory = options.storeFactory ?? ((_id, path) => new JsonlEventStore(path));
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
     this.#startTimeoutMs = options.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS;
+    // Timeouts must be positive integers. A value of 0 fires the timer before
+    // supervisor.start reaches its first await, letting it leak half-built
+    // resources; fractional values quietly round inside setTimeout. Reject
+    // both at the constructor boundary rather than silently coercing.
+    assertPositiveInteger(this.#startTimeoutMs, "startTimeoutMs");
+    assertPositiveInteger(this.#closeTimeoutMs, "closeTimeoutMs");
   }
 
   async startSession(_options: StartSessionOptions): Promise<SessionHandle> {
@@ -385,6 +391,12 @@ export class StartTimeoutError extends Error {
   constructor(label: string, timeoutMs: number) {
     super(`${label} timed out after ${timeoutMs}ms`);
     this.name = "StartTimeoutError";
+  }
+}
+
+function assertPositiveInteger(value: number, label: string): void {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new TypeError(`${label} must be a positive integer; got ${value}`);
   }
 }
 

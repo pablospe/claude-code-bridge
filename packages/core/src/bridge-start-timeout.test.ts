@@ -119,3 +119,55 @@ test("startSession with a slow supervisor succeeds when startTimeoutMs is forgiv
   expect(typeof handle.id).toBe("string");
   await bridge.close(handle.id);
 });
+
+// startTimeoutMs / closeTimeoutMs must be positive integers. A value of 0
+// fires the timer before supervisor.start reaches its first await, which
+// lets the supervisor leak half-built resources. Fractional values would
+// quietly round inside setTimeout; rejecting them at the boundary forces
+// callers to be explicit. Negative values are nonsensical for a timeout.
+test("Bridge constructor rejects startTimeoutMs <= 0", () => {
+  const supervisor = new HangingSupervisor();
+  const opts = { storeDir: dir, supervisorFactory: () => supervisor };
+  expect(() => new Bridge({ ...opts, startTimeoutMs: 0 })).toThrow(TypeError);
+  expect(() => new Bridge({ ...opts, startTimeoutMs: 0 })).toThrow(
+    /startTimeoutMs must be a positive integer/,
+  );
+  expect(() => new Bridge({ ...opts, startTimeoutMs: -5 })).toThrow(TypeError);
+});
+
+test("Bridge constructor rejects non-integer startTimeoutMs", () => {
+  const supervisor = new HangingSupervisor();
+  const opts = { storeDir: dir, supervisorFactory: () => supervisor };
+  expect(() => new Bridge({ ...opts, startTimeoutMs: 1.5 })).toThrow(TypeError);
+  expect(() => new Bridge({ ...opts, startTimeoutMs: Number.NaN })).toThrow(TypeError);
+});
+
+test("Bridge constructor accepts startTimeoutMs = 1 (smallest valid)", () => {
+  const supervisor = new HangingSupervisor();
+  expect(
+    () => new Bridge({ storeDir: dir, supervisorFactory: () => supervisor, startTimeoutMs: 1 }),
+  ).not.toThrow();
+});
+
+test("Bridge constructor rejects closeTimeoutMs <= 0", () => {
+  const supervisor = new HangingSupervisor();
+  const opts = { storeDir: dir, supervisorFactory: () => supervisor };
+  expect(() => new Bridge({ ...opts, closeTimeoutMs: 0 })).toThrow(TypeError);
+  expect(() => new Bridge({ ...opts, closeTimeoutMs: 0 })).toThrow(
+    /closeTimeoutMs must be a positive integer/,
+  );
+  expect(() => new Bridge({ ...opts, closeTimeoutMs: -1 })).toThrow(TypeError);
+});
+
+test("Bridge constructor rejects non-integer closeTimeoutMs", () => {
+  const supervisor = new HangingSupervisor();
+  const opts = { storeDir: dir, supervisorFactory: () => supervisor };
+  expect(() => new Bridge({ ...opts, closeTimeoutMs: 2.5 })).toThrow(TypeError);
+});
+
+test("Bridge constructor accepts closeTimeoutMs = 1 (smallest valid)", () => {
+  const supervisor = new HangingSupervisor();
+  expect(
+    () => new Bridge({ storeDir: dir, supervisorFactory: () => supervisor, closeTimeoutMs: 1 }),
+  ).not.toThrow();
+});
