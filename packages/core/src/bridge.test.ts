@@ -794,6 +794,112 @@ test("emit path: storeErrorNotified re-arms after a successful append", async ()
   }
 });
 
+test("supervisor-emitted session.ended and user close() dedup: supervisor.close runs once", async () => {
+  // Race scenario from the M2 review pass:
+  //
+  //   1. supervisor.start resolves; bridge transitions to "open".
+  //   2. Supervisor schedules ctx.emit({type:"session.ended"}) via setImmediate.
+  //   3. User awaits a microtask and calls bridge.close(id) ~simultaneously.
+  //
+  // Whoever wins the race must claim the teardown; the loser must dedup on
+  // session.closingPromise. supervisor.close runs once, session.ended appears
+  // in the JSONL once, both call paths resolve to the same outcome.
+  let emit: ((e: BridgeEvent) => void) | undefined;
+  const closeCalls: string[] = [];
+  class TerminalEmitSupervisor implements Supervisor {
+    async start(ctx: SupervisorContext): Promise<void> {
+      emit = ctx.emit;
+      setImmediate(() => {
+        emit?.({ type: "session.ended", sessionId: ctx.sessionId });
+      });
+    }
+    async sendMessage(): Promise<void> {}
+    async interrupt(): Promise<void> {}
+    async close(sessionId: string): Promise<void> {
+      closeCalls.push(sessionId);
+    }
+  }
+
+  const b = new Bridge({
+    storeDir: dir,
+    supervisorFactory: () => new TerminalEmitSupervisor(),
+  });
+
+  const handle = await b.startSession({});
+
+  // Kick off both close paths in adjacent microtasks. The supervisor-emitted
+  // session.ended will fire on the next macrotask (setImmediate); the user
+  // close is invoked synchronously inline. Whichever wins, both must dedup.
+  const userClose = b.close(handle.id);
+  // Wait long enough for the setImmediate-driven supervisor emission to land
+  // and for any race window inside the bridge to surface.
+  await new Promise((r) => setTimeout(r, 20));
+  const secondClose = b.close(handle.id);
+
+  const [a, c] = await Promise.all([userClose, secondClose]);
+  expect(a).toBeUndefined();
+  expect(c).toBeUndefined();
+
+  // supervisor.close called exactly once across all paths.
+  expect(closeCalls).toEqual([handle.id]);
+
+  // session.ended persisted exactly once.
+  const stored = await b.readStoredEvents(handle.id);
+  const endedCount = stored.filter((e) => e.type === "session.ended").length;
+  expect(endedCount).toBe(1);
+});
+
+test("supervisor-initiated close re-entrancy: closingPromise set before supervisor.close runs", async () => {
+  // Synchronous re-entrancy window in the supervisor-initiated close path.
+  // When the supervisor emits session.ended, the bridge synchronously calls
+  // session.supervisor.close() inside #runClose. If supervisor.close re-enters
+  // bridge.close (e.g. a fan-out handler), session.closingPromise MUST already
+  // be set — otherwise the re-entrant call falls through, runs a second
+  // #runClose pass, and supervisor.close fires twice.
+  //
+  // Repro: ReentrantSupervisor emits session.ended via setImmediate, and its
+  // close() synchronously calls bridge.close(id). The second call must dedup.
+  let bridgeRef: Bridge | undefined;
+  let sessionRef: string | undefined;
+  const closeCalls: string[] = [];
+  class ReentrantSupervisor implements Supervisor {
+    async start(ctx: SupervisorContext): Promise<void> {
+      setImmediate(() => {
+        ctx.emit({ type: "session.ended", sessionId: ctx.sessionId });
+      });
+    }
+    async sendMessage(): Promise<void> {}
+    async interrupt(): Promise<void> {}
+    async close(sessionId: string): Promise<void> {
+      closeCalls.push(sessionId);
+      // Synchronously re-enter bridge.close while close is mid-flight.
+      // closingPromise must already be set on the session at this point.
+      if (bridgeRef && sessionRef) {
+        bridgeRef.close(sessionRef).catch(() => undefined);
+      }
+    }
+  }
+
+  const b = new Bridge({
+    storeDir: dir,
+    supervisorFactory: () => new ReentrantSupervisor(),
+  });
+  bridgeRef = b;
+  const handle = await b.startSession({});
+  sessionRef = handle.id;
+
+  // Let the supervisor-emitted session.ended drive teardown end-to-end.
+  await new Promise((r) => setTimeout(r, 50));
+
+  // supervisor.close fired exactly once even with re-entrant bridge.close.
+  expect(closeCalls).toEqual([handle.id]);
+
+  // session.ended persisted exactly once.
+  const stored = await b.readStoredEvents(handle.id);
+  const endedCount = stored.filter((e) => e.type === "session.ended").length;
+  expect(endedCount).toBe(1);
+});
+
 test("supervisor events with wrong sessionId are dropped and logged", async () => {
   class WrongIdSupervisor implements Supervisor {
     ctx: SupervisorContext | undefined;

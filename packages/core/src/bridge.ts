@@ -224,7 +224,13 @@ export class Bridge implements ClaudeCodeBridge {
     if (session.closingPromise) return session.closingPromise;
     if (session.state === "closed") return;
     session.state = "closing";
-    session.closingPromise = this.#runClose(session, { emitSessionEnded: true });
+    // closingPromise must be set BEFORE #runClose begins executing so that a
+    // synchronous re-entrant bridge.close (e.g. driven by supervisor.close
+    // calling back into the bridge) observes the in-flight promise and
+    // dedups instead of starting a second teardown pass.
+    const deferred = createDeferred<void>();
+    session.closingPromise = deferred.promise;
+    this.#runClose(session, { emitSessionEnded: true }).then(deferred.resolve, deferred.reject);
     return session.closingPromise;
   }
 
@@ -361,7 +367,15 @@ export class Bridge implements ClaudeCodeBridge {
       // iterators terminate cleanly) and supervisor.close runs once.
       // emitSessionEnded:false because the supervisor's own event is already
       // in flight on session.pending and will be drained inside #runClose.
-      session.closingPromise = this.#runClose(session, { emitSessionEnded: false });
+      //
+      // closingPromise MUST be assigned BEFORE #runClose begins executing.
+      // #runClose calls session.supervisor.close synchronously up to its
+      // first await; if that supervisor.close re-enters bridge.close (e.g.
+      // a fan-out teardown handler), the re-entrant call must observe
+      // closingPromise to dedup. Bridge a Deferred to wire the work in.
+      const deferred = createDeferred<void>();
+      session.closingPromise = deferred.promise;
+      this.#runClose(session, { emitSessionEnded: false }).then(deferred.resolve, deferred.reject);
       // Detach from the unhandled-rejection path; callers who care await it
       // via bridge.close(sessionId).
       session.closingPromise.catch((err) => {
@@ -392,6 +406,22 @@ export class StartTimeoutError extends Error {
     super(`${label} timed out after ${timeoutMs}ms`);
     this.name = "StartTimeoutError";
   }
+}
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (err: unknown) => void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 function assertPositiveInteger(value: number, label: string): void {
