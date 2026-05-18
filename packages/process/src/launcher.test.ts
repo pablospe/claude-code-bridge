@@ -269,6 +269,66 @@ test("kill is a no-op once the child has already exited", async () => {
   await handle.kill("signal");
 });
 
+test("kill is idempotent under concurrent callers (same exit, single escalation pass)", async () => {
+  // Two concurrent kill("graceful") calls must share the same in-flight
+  // teardown: both resolve to the same exit result and the kill ladder runs
+  // exactly once. We instrument the underlying fake-pty to count
+  // signal-delivery invocations.
+  //
+  // The child traps SIGINT so the ladder must escalate at least to SIGTERM.
+  // Expected ONE-pass signal sequence: SIGINT, SIGTERM (and possibly SIGKILL
+  // if SIGTERM is also slow). Without the in-flight guard each step would
+  // double-fire — e.g. two SIGINTs, two SIGTERMs.
+  const signalCounts = new Map<string, number>();
+  mock.module("node-pty", () => ({
+    spawn: (
+      command: string,
+      args: string[],
+      opts?: { cwd?: string; env?: Record<string, string> },
+    ) => {
+      const real = fakeSpawn(command, args, opts);
+      return {
+        get pid() {
+          return real.pid;
+        },
+        write: (data: string) => real.write(data),
+        kill: (signal?: string) => {
+          const key = signal ?? "SIGHUP";
+          signalCounts.set(key, (signalCounts.get(key) ?? 0) + 1);
+          real.kill(signal);
+        },
+        onData: (cb: DataListener) => real.onData(cb),
+        onExit: (cb: ExitListener) => real.onExit(cb),
+      };
+    },
+  }));
+  const fresh = await import(`./launcher.ts?count=${Date.now()}`);
+  try {
+    const handle = fresh.launch("bash", ["-c", "trap '' INT; sleep 10"]);
+    const [a, b] = await Promise.all([
+      handle.kill("graceful", { gracefulInput: "exit\n" }),
+      handle.kill("graceful", { gracefulInput: "exit\n" }),
+    ]);
+    // Both calls return undefined; assertion is that they both completed.
+    expect(a).toBeUndefined();
+    expect(b).toBeUndefined();
+    const exitA = await handle.waitExit();
+    const exitB = await handle.waitExit();
+    // Same exit result observed by every caller.
+    expect(exitA.code).toBe(exitB.code);
+    expect(exitA.signal).toBe(exitB.signal);
+    // ONE escalation pass: each signal delivered at most once. SIGINT MUST
+    // appear (the ladder reached it); SIGTERM also (since SIGINT was trapped);
+    // SIGKILL is optional depending on signal-delivery timing for SIGTERM.
+    expect(signalCounts.get("SIGINT") ?? 0).toBe(1);
+    expect(signalCounts.get("SIGTERM") ?? 0).toBeLessThanOrEqual(1);
+    expect(signalCounts.get("SIGKILL") ?? 0).toBeLessThanOrEqual(1);
+  } finally {
+    // Restore the working mock for any later tests.
+    mock.module("node-pty", () => fakeNodePty);
+  }
+});
+
 test("LauncherUnavailableError: thrown when node-pty fails to load", async () => {
   // Swap the mocked module to throw on access of `spawn`. Using a getter
   // simulates a require-time failure path.

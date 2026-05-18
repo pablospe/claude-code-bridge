@@ -124,6 +124,12 @@ export function launch(command: string, args: string[], opts?: LaunchOpts): Laun
   const exitListeners = new Set<(e: { code: number; signal?: string }) => void>();
   let exit: { code: number; signal?: string } | undefined;
   const exitWaiters: Array<(e: { code: number; signal?: string }) => void> = [];
+  /**
+   * In-flight kill ladder. Concurrent `kill()` callers share this promise so
+   * the escalation ladder runs exactly once; without it each caller would
+   * walk the ladder independently and re-fire signals at each step.
+   */
+  let killPromise: Promise<void> | undefined;
 
   term.onData((chunk) => {
     for (const cb of dataListeners) cb(chunk);
@@ -165,6 +171,40 @@ export function launch(command: string, args: string[], opts?: LaunchOpts): Laun
     });
   };
 
+  const runKill = async (
+    mode: "graceful" | "signal",
+    killOpts: KillOpts | undefined,
+  ): Promise<void> => {
+    if (exit) return;
+    if (mode === "signal") {
+      // Single-signal teardown: SIGTERM, then SIGKILL if SIGTERM is ignored
+      // within the standard 1.5s window. Caller did not opt into the
+      // graceful-input step, so no bytes are written to the PTY.
+      safeKill(term, "SIGTERM");
+      if (await waitForExit(SIGTERM_WAIT_MS)) return;
+      safeKill(term, "SIGKILL");
+      return;
+    }
+    // Graceful ladder: gracefulInput → 1s wait → SIGINT (1.5s) → SIGTERM
+    // (1.5s) → SIGKILL. Total of 4s of bounded waits within the 5s budget
+    // the supervisor allots for teardown; the 1s slack absorbs the kernel
+    // delivering the final signal and the child emitting its exit event.
+    const gracefulInput = killOpts?.gracefulInput;
+    if (gracefulInput !== undefined && gracefulInput.length > 0) {
+      try {
+        term.write(gracefulInput);
+      } catch {
+        /* swallow: child may have raced us to closed stdin. */
+      }
+    }
+    if (await waitForExit(GRACEFUL_WAIT_MS)) return;
+    safeKill(term, "SIGINT");
+    if (await waitForExit(SIGINT_WAIT_MS)) return;
+    safeKill(term, "SIGTERM");
+    if (await waitForExit(SIGTERM_WAIT_MS)) return;
+    safeKill(term, "SIGKILL");
+  };
+
   const handle: LauncherHandle = {
     get pid() {
       return term.pid;
@@ -199,35 +239,15 @@ export function launch(command: string, args: string[], opts?: LaunchOpts): Laun
         exitWaiters.push(resolve);
       });
     },
-    async kill(mode, killOpts) {
-      if (exit) return;
-      if (mode === "signal") {
-        // Single-signal teardown: SIGTERM, then SIGKILL if SIGTERM is ignored
-        // within the standard 1.5s window. Caller did not opt into the
-        // graceful-input step, so no bytes are written to the PTY.
-        safeKill(term, "SIGTERM");
-        if (await waitForExit(SIGTERM_WAIT_MS)) return;
-        safeKill(term, "SIGKILL");
-        return;
-      }
-      // Graceful ladder: gracefulInput → 1s wait → SIGINT (1.5s) → SIGTERM
-      // (1.5s) → SIGKILL. Total of 4s of bounded waits within the 5s budget
-      // the supervisor allots for teardown; the 1s slack absorbs the kernel
-      // delivering the final signal and the child emitting its exit event.
-      const gracefulInput = killOpts?.gracefulInput;
-      if (gracefulInput !== undefined && gracefulInput.length > 0) {
-        try {
-          term.write(gracefulInput);
-        } catch {
-          /* swallow: child may have raced us to closed stdin. */
-        }
-      }
-      if (await waitForExit(GRACEFUL_WAIT_MS)) return;
-      safeKill(term, "SIGINT");
-      if (await waitForExit(SIGINT_WAIT_MS)) return;
-      safeKill(term, "SIGTERM");
-      if (await waitForExit(SIGTERM_WAIT_MS)) return;
-      safeKill(term, "SIGKILL");
+    kill(mode, killOpts) {
+      if (exit) return Promise.resolve();
+      // Share the in-flight ladder with concurrent callers so each escalation
+      // step fires exactly once. The cached promise is retained for the
+      // lifetime of the handle; after exit, the early-return above short-
+      // circuits before this point.
+      if (killPromise) return killPromise;
+      killPromise = runKill(mode, killOpts);
+      return killPromise;
     },
   };
 
