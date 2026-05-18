@@ -9,7 +9,7 @@ import {
   type SupervisorContext,
   type SupervisorFactory,
 } from "@ccb/core";
-import { ControlServer } from "@ccb/mcp-channel";
+import { ControlServer, type ControlServerEndpoint } from "@ccb/mcp-channel";
 import { launch as defaultLaunch, type LauncherHandle, type LaunchOpts } from "@ccb/process";
 import { generateMcpConfig } from "./config.ts";
 
@@ -106,6 +106,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
 
   #ctx: SupervisorContext | undefined;
   #server: ControlServer | undefined;
+  #serverEndpoint: ControlServerEndpoint | undefined;
   #launcher: LauncherHandle | undefined;
   #tempDir: string | undefined;
   #autoConfirmCleanup: (() => void) | undefined;
@@ -118,6 +119,18 @@ export class ClaudeCodeSupervisor implements Supervisor {
     this.#writeFile = options.writeFile ?? writeFile;
   }
 
+  /**
+   * Address of the internal ControlServer once it has bound, undefined before
+   * `start()` has reached its `server.listen` call and undefined again after
+   * `close()`. Exposed as a test seam so a test rig can connect a real
+   * `ControlClient` to the supervisor's endpoint (which triggers the
+   * synthetic `hello` the start gate awaits). Not part of the `Supervisor`
+   * contract — production code routes through the bridge.
+   */
+  get serverEndpoint(): ControlServerEndpoint | undefined {
+    return this.#serverEndpoint;
+  }
+
   async start(ctx: SupervisorContext): Promise<void> {
     if (this.#server || this.#launcher) {
       throw new Error("supervisor already started");
@@ -128,6 +141,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
     const server = new ControlServer();
     const endpoint = await server.listen({ host: "127.0.0.1", port: 0 });
     this.#server = server;
+    this.#serverEndpoint = endpoint;
     server.on("tool", (sid, name, args) => {
       if (sid !== sessionId) return;
       const current = this.#ctx;
@@ -170,6 +184,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
       this.#ctx = undefined;
       const closingServer = this.#server;
       this.#server = undefined;
+      this.#serverEndpoint = undefined;
       if (closingServer) {
         try {
           await closingServer.close();
@@ -208,6 +223,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
     this.#launcher = undefined;
     const server = this.#server;
     this.#server = undefined;
+    this.#serverEndpoint = undefined;
     this.#ctx = undefined;
 
     if (launcher) {

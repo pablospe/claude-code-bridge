@@ -121,6 +121,25 @@ afterEach(async () => {
   await rm(storeDir, { recursive: true, force: true });
 });
 
+/**
+ * Bounded polling helper. Resolves as soon as `predicate()` returns truthy.
+ * Rejects after `timeoutMs` so a regression surfaces as a test failure rather
+ * than a hang. Used to observe state transitions on the supervisor that are
+ * not directly awaitable (e.g. ControlServer bind, hello-gate clearance).
+ */
+async function waitFor(
+  predicate: () => boolean,
+  { timeoutMs = 2000, intervalMs = 5 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) {
+      throw new Error(`waitFor: predicate did not become truthy within ${timeoutMs}ms`);
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
 function captureLauncherFactory(): (
   cmd: string,
   args: readonly string[],
@@ -167,6 +186,46 @@ async function startWithFakeLauncher(opts: {
   if (!launcher) throw new Error("launcher was not created");
   return { supervisor, ctx, emitted, launcher, startResult };
 }
+
+test("serverEndpoint exposes the bound ControlServer address after start, undefined before/after", async () => {
+  // Test rigs need to discover the supervisor's randomly-bound ControlServer
+  // endpoint so they can connect a real ControlClient (which fires the
+  // synthetic `hello` the hello-gate awaits). The getter is the seam.
+  const factory = captureLauncherFactory();
+  const supervisor = new ClaudeCodeSupervisor({
+    channels: "dev-flag",
+    launcherFactory: factory,
+  });
+  // Before start: undefined.
+  expect(supervisor.serverEndpoint).toBeUndefined();
+  const ctx: SupervisorContext = {
+    sessionId: FAKE_SESSION_ID,
+    emit: () => {},
+  };
+  const startPromise = supervisor.start(ctx);
+  // The server binds before start awaits anything async after the listen()
+  // call returns, but to keep this independent of internal ordering, we poll
+  // briefly via the helper used elsewhere.
+  await waitFor(() => supervisor.serverEndpoint !== undefined);
+  const ep = supervisor.serverEndpoint;
+  if (!ep) throw new Error("serverEndpoint not set");
+  expect(ep.host).toBe("127.0.0.1");
+  expect(ep.port).toBeGreaterThan(0);
+  expect(ep.endpoint).toMatch(/^127\.0\.0\.1:\d+$/);
+  // Drive the hello so start can resolve.
+  const { ControlClient } = await import("@ccb/mcp-channel");
+  const client = new ControlClient({
+    endpoint: ep.endpoint,
+    sessionId: FAKE_SESSION_ID,
+    onDeliver: () => undefined,
+  });
+  await client.connect();
+  await startPromise;
+  await client.close();
+  await supervisor.close(FAKE_SESSION_ID);
+  // After close: undefined again.
+  expect(supervisor.serverEndpoint).toBeUndefined();
+});
 
 test("start in dev-flag mode launches claude with the documented flag set", async () => {
   const { supervisor, launcher, startResult } = await startWithFakeLauncher({
