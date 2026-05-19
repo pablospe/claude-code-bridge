@@ -1,19 +1,54 @@
 {
-  "name": "claude-code-bridge",
-  "private": true,
+  "name": "claudecode-bridge",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Bridge that drives interactive Claude Code sessions from external UIs via the channels MCP surface. Provides a managed launch path (bridge spawns claude via node-pty), an observational hook relay (PreToolUse / PostToolUse / Stop surfaced as tool.event records), and a JSONL event store.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pablospe/claude-code-bridge.git"
+  },
   "type": "module",
+  "engines": {
+    "bun": ">=1.3"
+  },
   "workspaces": [
     "packages/*",
     "apps/*"
   ],
   "bin": {
+    "ccb": "./dist/bin/ccb.js",
+    "ccb-channel-server": "./dist/bin/ccb-channel-server.js",
+    "ccb-hook-relay": "./dist/bin/ccb-hook-relay.js",
     "ccb-launcher": "./bin/ccb-launcher.cjs"
   },
+  "main": "./dist/index.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/types/index.d.ts"
+    }
+  },
+  "files": [
+    "dist/",
+    "bin/ccb-launcher.cjs",
+    ".claude-plugin/",
+    "plugins/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "bun test --pass-with-no-tests",
     "typecheck": "tsc -b",
     "lint": "bunx biome check .",
-    "format": "bunx biome format --write ."
+    "format": "bunx biome format --write .",
+    "prepublishOnly": "bun run typecheck && bun test && bun run lint && bun run build"
+  },
+  "dependencies": {
+    "@homebridge/node-pty-prebuilt-multiarch": "0.13.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "commander": "^12.0.0",
+    "zod": "^3.25.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.15",
