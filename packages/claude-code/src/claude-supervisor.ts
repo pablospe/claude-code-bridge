@@ -6,6 +6,7 @@ import {
   dispatchBridgeTool,
   emitCrashEvents,
   HookFanin,
+  type HookFaninMetrics,
   type Supervisor,
   type SupervisorContext,
   type SupervisorFactory,
@@ -241,7 +242,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
    * `Supervisor` contract. Returns `undefined` before `start()` and after
    * `close()`.
    */
-  get hookMetrics(): import("@ccb/core").HookFaninMetrics | undefined {
+  get hookMetrics(): HookFaninMetrics | undefined {
     return this.#hookFanin?.metrics();
   }
 

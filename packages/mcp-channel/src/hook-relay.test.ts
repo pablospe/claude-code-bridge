@@ -3,7 +3,11 @@ import type { Server as NetServer, Socket } from "node:net";
 import { ControlServer } from "./control.ts";
 
 const RELAY_PATH = new URL("./hook-relay.ts", import.meta.url).pathname;
-const CWD = "/home/pablo/code/claude-code-bridge";
+// Resolve the repo root from the test file's own location so the test runs
+// on any host / CI runner, not just the original development machine.
+// hook-relay.test.ts lives at packages/mcp-channel/src/hook-relay.test.ts —
+// three levels under the repo root.
+const CWD = new URL("../../..", import.meta.url).pathname;
 
 type SpawnOpts = {
   readonly event?: string;

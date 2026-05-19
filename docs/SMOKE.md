@@ -308,8 +308,8 @@ Expected event interleaving:
 ```
 [session.started]  sid=…
 [agent.reply]      "I'll take a look at README.md."
-[tool.event]       PreToolUse  Read   {file_path:"…/README.md"}
-[tool.event]       PostToolUse Read   (1.2 KB, truncated:false)
+[tool.event]       PreToolUse Read "…/README.md"
+[tool.event]       PostToolUse Read (1.2KB)
 [agent.reply]      "The first line is `# Claude Code Bridge`."
 [tool.event]       Stop        (per-message)
 [agent.done]       final=true

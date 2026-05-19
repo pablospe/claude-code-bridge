@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import type { BridgeEvent } from "./events.ts";
-import { dispatchBridgeTool, type Supervisor, type SupervisorContext } from "./supervisor.ts";
+import {
+  dispatchBridgeTool,
+  HOOK_MAX_FIELD_BYTES,
+  type Supervisor,
+  type SupervisorContext,
+  truncateHookPayload,
+} from "./supervisor.ts";
 import type { ClaudeCodeBridge, SendOptions, StartSessionOptions } from "./types.ts";
 
 test("Supervisor can be implemented with the documented surface", async () => {
@@ -78,95 +84,64 @@ test("dispatchBridgeTool drops malformed payloads silently", () => {
 });
 
 // ---------------------------------------------------------------------------
-// M3.1 — dispatchHookEvent + 64KB per-field truncation
+// M3.1 — truncateHookPayload (64KB per-field truncation, JSON-serialized rule)
 // ---------------------------------------------------------------------------
 
-import { dispatchHookEvent, HOOK_MAX_FIELD_BYTES } from "./supervisor.ts";
-
-test("dispatchHookEvent emits a tool.event BridgeEvent with verbatim payload when small", () => {
-  const events: BridgeEvent[] = [];
-  const ctx: SupervisorContext = { sessionId: "s-hook", emit: (e) => events.push(e) };
-  dispatchHookEvent(ctx, "PreToolUse", {
+test("truncateHookPayload passes a small payload through verbatim and omits truncated_fields", () => {
+  const out = truncateHookPayload({
     tool_name: "Bash",
     tool_use_id: "toolu_01",
     tool_input: { command: "ls" },
   });
-  expect(events).toEqual([
-    {
-      type: "tool.event",
-      sessionId: "s-hook",
-      payload: {
-        event: "PreToolUse",
-        data: {
-          tool_name: "Bash",
-          tool_use_id: "toolu_01",
-          tool_input: { command: "ls" },
-        },
-      },
-    },
-  ]);
+  expect(out).toEqual({
+    tool_name: "Bash",
+    tool_use_id: "toolu_01",
+    tool_input: { command: "ls" },
+  });
+  expect("truncated_fields" in out).toBe(false);
 });
 
-test("dispatchHookEvent truncates a string tool_input larger than 64KB and marks truncated_fields", () => {
-  const events: BridgeEvent[] = [];
-  const ctx: SupervisorContext = { sessionId: "s-trunc", emit: (e) => events.push(e) };
+test("truncateHookPayload truncates a string tool_input larger than 64KB and marks the field", () => {
   const huge = "x".repeat(HOOK_MAX_FIELD_BYTES + 10);
-  dispatchHookEvent(ctx, "PreToolUse", {
-    tool_name: "Bash",
-    tool_input: huge,
-  });
-  expect(events).toHaveLength(1);
-  const data = (events[0] as { payload: { data: Record<string, unknown> } }).payload.data;
-  expect(typeof data.tool_input).toBe("string");
-  expect(Buffer.byteLength(data.tool_input as string, "utf8")).toBeLessThanOrEqual(
+  const out = truncateHookPayload({ tool_name: "Bash", tool_input: huge });
+  expect(typeof out.tool_input).toBe("string");
+  // Spec target: JSON-serialized size stays inside the cap (raw + 2 quote bytes).
+  expect(Buffer.byteLength(JSON.stringify(out.tool_input), "utf8")).toBeLessThanOrEqual(
     HOOK_MAX_FIELD_BYTES,
   );
-  expect(data.truncated_fields).toEqual(["tool_input"]);
+  expect(out.truncated_fields).toEqual(["tool_input"]);
 });
 
-test("dispatchHookEvent independently truncates tool_input and tool_result (per-field rule)", () => {
-  const events: BridgeEvent[] = [];
-  const ctx: SupervisorContext = { sessionId: "s-both", emit: (e) => events.push(e) };
+test("truncateHookPayload independently truncates tool_input and tool_result (per-field rule)", () => {
   const huge = "y".repeat(HOOK_MAX_FIELD_BYTES + 100);
-  dispatchHookEvent(ctx, "PostToolUse", {
+  const out = truncateHookPayload({
     tool_name: "Bash",
     tool_input: { command: "tiny" }, // small object — must NOT be truncated
     tool_result: huge, // huge string — must be truncated
   });
-  const data = (events[0] as { payload: { data: Record<string, unknown> } }).payload.data;
-  expect(data.tool_input).toEqual({ command: "tiny" });
-  expect(typeof data.tool_result).toBe("string");
-  expect(Buffer.byteLength(data.tool_result as string, "utf8")).toBeLessThanOrEqual(
+  expect(out.tool_input).toEqual({ command: "tiny" });
+  expect(typeof out.tool_result).toBe("string");
+  expect(Buffer.byteLength(JSON.stringify(out.tool_result), "utf8")).toBeLessThanOrEqual(
     HOOK_MAX_FIELD_BYTES,
   );
-  expect(data.truncated_fields).toEqual(["tool_result"]);
+  expect(out.truncated_fields).toEqual(["tool_result"]);
 });
 
-test("dispatchHookEvent replaces an oversize object tool_input with the truncation marker string", () => {
-  const events: BridgeEvent[] = [];
-  const ctx: SupervisorContext = { sessionId: "s-obj", emit: (e) => events.push(e) };
+test("truncateHookPayload replaces an oversize object tool_input with the truncation marker", () => {
   // Build an object whose serialized form exceeds 64KB.
   const bigArray = Array.from({ length: 70 }, () => "z".repeat(1024));
-  dispatchHookEvent(ctx, "PreToolUse", {
-    tool_input: { stuff: bigArray },
-  });
-  const data = (events[0] as { payload: { data: Record<string, unknown> } }).payload.data;
-  expect(typeof data.tool_input).toBe("string");
-  expect((data.tool_input as string).startsWith("<truncated: object exceeded")).toBe(true);
-  expect(data.truncated_fields).toEqual(["tool_input"]);
+  const out = truncateHookPayload({ tool_input: { stuff: bigArray } });
+  expect(typeof out.tool_input).toBe("string");
+  expect((out.tool_input as string).startsWith("<truncated: object exceeded")).toBe(true);
+  expect(out.truncated_fields).toEqual(["tool_input"]);
 });
 
-test("dispatchHookEvent omits truncated_fields entirely when nothing was cut", () => {
-  const events: BridgeEvent[] = [];
-  const ctx: SupervisorContext = { sessionId: "s-ok", emit: (e) => events.push(e) };
-  dispatchHookEvent(ctx, "Stop", { stop_hook_active: false });
-  const data = (events[0] as { payload: { data: Record<string, unknown> } }).payload.data;
-  expect("truncated_fields" in data).toBe(false);
+test("truncateHookPayload omits truncated_fields entirely when nothing was cut", () => {
+  const out = truncateHookPayload({ stop_hook_active: false });
+  expect("truncated_fields" in out).toBe(false);
 });
 
-test("dispatchHookEvent passes metadata fields (tool_name, tool_use_id, timestamps) through whole", () => {
-  const events: BridgeEvent[] = [];
-  const ctx: SupervisorContext = { sessionId: "s-meta", emit: (e) => events.push(e) };
+test("truncateHookPayload passes metadata fields (tool_name, tool_use_id, timestamps) through whole", () => {
   const meta = {
     tool_name: "Bash",
     tool_use_id: "toolu_meta",
@@ -174,9 +149,22 @@ test("dispatchHookEvent passes metadata fields (tool_name, tool_use_id, timestam
     hook_event_name: "PreToolUse",
     session_id: "claude-internal-not-routed",
   };
-  dispatchHookEvent(ctx, "PreToolUse", { ...meta, tool_input: { command: "echo hi" } });
-  const data = (events[0] as { payload: { data: Record<string, unknown> } }).payload.data;
+  const out = truncateHookPayload({ ...meta, tool_input: { command: "echo hi" } });
   for (const [k, v] of Object.entries(meta)) {
-    expect(data[k]).toEqual(v);
+    expect(out[k]).toEqual(v);
   }
+});
+
+test("truncateHookPayload truncates a string whose JSON-serialized form exceeds 64KB but raw bytes do not", () => {
+  // Use a string of `"` chars: each serializes to `\"` (2 bytes) so the raw byte
+  // count is half the serialized count. A raw length of HOOK_MAX_FIELD_BYTES - 1
+  // serializes to ~2 * (HOOK_MAX_FIELD_BYTES - 1) bytes, well over the cap.
+  const raw = '"'.repeat(HOOK_MAX_FIELD_BYTES - 1);
+  expect(Buffer.byteLength(raw, "utf8")).toBeLessThan(HOOK_MAX_FIELD_BYTES);
+  expect(Buffer.byteLength(JSON.stringify(raw), "utf8")).toBeGreaterThan(HOOK_MAX_FIELD_BYTES);
+  const out = truncateHookPayload({ tool_input: raw });
+  expect(out.truncated_fields).toEqual(["tool_input"]);
+  expect(Buffer.byteLength(JSON.stringify(out.tool_input), "utf8")).toBeLessThanOrEqual(
+    HOOK_MAX_FIELD_BYTES,
+  );
 });

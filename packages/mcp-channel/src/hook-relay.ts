@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
+import { writeSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
+import { truncateHookPayload } from "@ccb/core";
 import { parseEndpoint } from "./control.ts";
 
 /**
@@ -15,7 +17,15 @@ const SEND_CLOSE_TIMEOUT_MS = 100;
 const VALID_EVENTS = new Set(["PreToolUse", "PostToolUse", "Stop"]);
 
 function fail(reason: string): never {
-  process.stderr.write(`ccb-hook-relay: ${reason}\n`);
+  // Use synchronous write to fd 2 so the line lands before process.exit. With
+  // piped stderr, process.stderr.write may buffer and the buffer would be lost
+  // when exit() flushes nothing — violating the "every failure emits a
+  // ccb-hook-relay: line" contract.
+  try {
+    writeSync(2, `ccb-hook-relay: ${reason}\n`);
+  } catch {
+    // last resort — never throw out of fail()
+  }
   process.exit(0);
 }
 
@@ -203,11 +213,15 @@ async function relay(): Promise<void> {
     socket.write(`${JSON.stringify({ type: "hello", sessionId, role: "hook" })}\n`);
     await waitForHelloAck(socket, HELLO_ACK_TIMEOUT_MS);
 
+    // Truncate per-field BEFORE sending so the wire payload is bounded:
+    // protects the 100ms send/close slice from blowing up on a multi-MB
+    // tool_result, and matches the M3.md "post-truncation" wire-shape spec.
+    const truncated = truncateHookPayload(payload);
     const hookFrame = {
       type: "hook",
       sessionId,
       event: eventArg,
-      payload,
+      payload: truncated,
       sentAt: new Date().toISOString(),
     };
     await writeFrameAndClose(socket, hookFrame, SEND_CLOSE_TIMEOUT_MS);

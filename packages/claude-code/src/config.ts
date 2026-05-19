@@ -46,8 +46,9 @@ export interface HooksSettingsOptions {
    * Executable that runs the relay. Default `"bunx"` so the generated snippet
    * works after `bun install` without knowing the relay file path locally.
    *
-   * Callers passing args containing spaces are on their own: the snippet is a
-   * shell command string and this function does not quote arguments.
+   * Each component (command + args + event name) is shell-quoted with strict
+   * single quotes, so paths with spaces, quotes, or shell metacharacters
+   * (`$`, `;`, `&`, …) are safe.
    */
   readonly command?: string;
   /** Args prefixed before the event name. Default `["ccb-hook-relay"]`. */
@@ -76,14 +77,24 @@ export function generateHooksSettings(opts: HooksSettingsOptions): HooksSettings
   }
   const command = opts.command ?? DEFAULT_HOOK_COMMAND;
   const args = opts.args ?? DEFAULT_HOOK_ARGS;
-  const prefix = [command, ...args].join(" ");
   const hooks: Record<string, HooksSettingsMatcherEntry[]> = {};
   for (const event of opts.events) {
+    const parts = [command, ...args, event].map(shellQuote);
     hooks[event] = [
       {
-        hooks: [{ type: "command", command: `${prefix} ${event}` }],
+        hooks: [{ type: "command", command: parts.join(" ") }],
       },
     ];
   }
   return { hooks };
+}
+
+/**
+ * Single-quote a POSIX shell argument. Closes the quote, escapes any embedded
+ * single quotes as `'\''`, then re-opens. Safe for paths with spaces, quotes,
+ * `$`, `;`, etc. Bare alphanumeric / safe-char strings are returned unquoted.
+ */
+function shellQuote(s: string): string {
+  if (s.length > 0 && /^[A-Za-z0-9_\-./:=]+$/.test(s)) return s;
+  return `'${s.replace(/'/g, `'\\''`)}'`;
 }

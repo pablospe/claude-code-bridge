@@ -87,3 +87,34 @@ test("generateHooksSettings: output is JSON-serializable roundtrip", () => {
   const s = generateHooksSettings({ events: ["PreToolUse", "PostToolUse"] });
   expect(JSON.parse(JSON.stringify(s))).toEqual(s);
 });
+
+test("generateHooksSettings: shell-quotes a command path with spaces", () => {
+  const s = generateHooksSettings({
+    events: ["Stop"],
+    command: "/Users/John Doe/.bun/bin/bun",
+    args: ["/some path/hook-relay.ts"],
+  });
+  expect(s.hooks.Stop?.[0]?.hooks[0]?.command).toBe(
+    "'/Users/John Doe/.bun/bin/bun' '/some path/hook-relay.ts' Stop",
+  );
+});
+
+test("generateHooksSettings: shell-quotes a command path with single quotes (escape sequence)", () => {
+  const s = generateHooksSettings({
+    events: ["Stop"],
+    command: "/o'malley/bin/bun",
+    args: ["relay.ts"],
+  });
+  expect(s.hooks.Stop?.[0]?.hooks[0]?.command).toBe("'/o'\\''malley/bin/bun' relay.ts Stop");
+});
+
+test("generateHooksSettings: shell-quotes shell metacharacters in args", () => {
+  // `$(date)` would otherwise execute as command substitution when claude
+  // invokes the hook via the shell.
+  const s = generateHooksSettings({
+    events: ["PreToolUse"],
+    command: "bun",
+    args: ["$(date).ts"],
+  });
+  expect(s.hooks.PreToolUse?.[0]?.hooks[0]?.command).toBe("bun '$(date).ts' PreToolUse");
+});

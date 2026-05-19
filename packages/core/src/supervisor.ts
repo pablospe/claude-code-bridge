@@ -74,29 +74,15 @@ export const HOOK_MAX_FIELD_BYTES = 65_536;
 const HOOK_TRUNCATABLE_FIELDS = ["tool_input", "tool_result"] as const;
 
 /**
- * Translate a hook frame received over the control protocol into a `tool.event`
- * BridgeEvent. Applies the 64 KB per-field truncation policy to `tool_input`
- * and `tool_result` before emitting; truncated field names are recorded under
- * `data.truncated_fields` (omitted when nothing was cut).
- */
-export function dispatchHookEvent(
-  ctx: SupervisorContext,
-  event: string,
-  payload: Record<string, unknown>,
-): void {
-  const data = truncateHookPayload(payload);
-  ctx.emit({
-    type: "tool.event",
-    sessionId: ctx.sessionId,
-    payload: { event, data },
-  });
-}
-
-/**
  * Apply the 64 KB per-field truncation policy to a raw hook payload and
  * return a new object suitable for embedding in `tool.event.payload.data`.
- * Exposed for `HookFanin`, which truncates at queue-time so the bounded
- * pre-hello queue holds bounded-size payloads.
+ * Used by `HookFanin` (truncation at queue-time bounds the queue's memory
+ * footprint) and by the hook relay bin (truncation at send-time bounds the
+ * bytes on the wire and protects the relay's 100ms send slice).
+ *
+ * Per `docs/M3.md`: measurement target is `Buffer.byteLength(JSON.stringify
+ * (value), "utf8")`, so the 64 KB cap applies to the value as it appears
+ * inside the JSON-encoded `tool.event` payload, not the raw string bytes.
  */
 export function truncateHookPayload(payload: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...payload };
@@ -117,14 +103,13 @@ export function truncateHookPayload(payload: Record<string, unknown>): Record<st
 }
 
 function truncateValue(value: unknown): { value: unknown; truncated: boolean } {
-  if (typeof value === "string") {
-    const buf = Buffer.from(value, "utf8");
-    if (buf.byteLength <= HOOK_MAX_FIELD_BYTES) return { value, truncated: false };
-    const sliced = buf.subarray(0, HOOK_MAX_FIELD_BYTES).toString("utf8");
-    const safe = sliced.endsWith("�") ? sliced.slice(0, -1) : sliced;
-    return { value: safe, truncated: true };
-  }
   if (value === null || value === undefined) return { value, truncated: false };
+  if (typeof value === "string") {
+    if (Buffer.byteLength(JSON.stringify(value), "utf8") <= HOOK_MAX_FIELD_BYTES) {
+      return { value, truncated: false };
+    }
+    return { value: truncateStringToFit(value, HOOK_MAX_FIELD_BYTES), truncated: true };
+  }
   let serialized: string | undefined;
   try {
     serialized = JSON.stringify(value);
@@ -138,4 +123,31 @@ function truncateValue(value: unknown): { value: unknown; truncated: boolean } {
     return { value, truncated: false };
   }
   return { value: `<truncated: object exceeded ${HOOK_MAX_FIELD_BYTES} bytes>`, truncated: true };
+}
+
+/**
+ * Return the largest prefix of `value` whose JSON-serialized form
+ * (`JSON.stringify(prefix)`) fits within `maxBytes`. Binary-searches the raw
+ * UTF-8 byte cut point because escape-heavy strings (e.g. all `"` or `\\n`)
+ * roughly double in size when serialized — slicing on raw bytes alone does
+ * not bound the serialized output. log2(64 KB) = 16 iterations is cheap.
+ */
+function truncateStringToFit(value: string, maxBytes: number): string {
+  const buf = Buffer.from(value, "utf8");
+  let lo = 0;
+  let hi = buf.byteLength;
+  let best = 0;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const candidate = buf.subarray(0, mid).toString("utf8");
+    const safe = candidate.endsWith("�") ? candidate.slice(0, -1) : candidate;
+    if (Buffer.byteLength(JSON.stringify(safe), "utf8") <= maxBytes) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const final = buf.subarray(0, best).toString("utf8");
+  return final.endsWith("�") ? final.slice(0, -1) : final;
 }

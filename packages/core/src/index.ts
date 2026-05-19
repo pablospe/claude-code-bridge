@@ -20,7 +20,6 @@ export {
 export { JsonlEventStore } from "./store.ts";
 export {
   dispatchBridgeTool,
-  dispatchHookEvent,
   HOOK_MAX_FIELD_BYTES,
   type Supervisor,
   type SupervisorContext,
