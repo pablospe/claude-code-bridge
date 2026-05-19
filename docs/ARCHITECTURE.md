@@ -174,7 +174,7 @@ contract — they differ only in who is responsible for spawning `claude`.
 `ClaudeCodeSupervisor` is a **convenience layer**, not a requirement. It bundles
 "spawn `claude` + run the bridge" into a single command. A consumer that already has its
 own process orchestration (systemd, supervisord, a tmux session, a custom launcher,
-the `scripts/diagnostics/claude-pty-trace.cjs` harness) does not need it.
+the `bin/ccb-launcher.cjs` harness) does not need it.
 
 ### Today's working pattern on Bun-on-Linux
 
@@ -187,7 +187,7 @@ external launcher**:
 - **Bridge under Bun**:
   `bun apps/ccb/src/cli.ts serve --endpoint 127.0.0.1:18486 --session-id <uuid> --format json`
 - **Claude spawned externally**:
-  - The Node diagnostic harness (`scripts/diagnostics/claude-pty-trace.cjs`) — the current
+  - The Node diagnostic harness (`bin/ccb-launcher.cjs`) — the current
     best Linux+Bun launcher; documented in [`SMOKE.md`](./SMOKE.md).
   - A human in another terminal (the two-terminal manual procedure in
     [`SMOKE.md`](./SMOKE.md)).

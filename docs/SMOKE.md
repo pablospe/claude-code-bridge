@@ -172,11 +172,13 @@ CCB_RUN_REAL_CLAUDE=1 bun scripts/smoke-scripted.ts
 
 Do not depend on this in CI without a PTY surrogate. The intent is to give a single-command path for local experimentation; the supported single-command path for real `claude` is managed launch (`bun apps/ccb/src/cli.ts demo --supervisor=claude "..."`).
 
-## Diagnostic harness (when managed launch fails opaquely)
+## External launcher (ccb-launcher)
 
-`scripts/diagnostics/claude-pty-trace.cjs` is a pure-Node script that mimics what `ClaudeCodeSupervisor` does to spawn `claude`, tees every PTY byte to a log file, and auto-confirms the dev-channels warning the same way the supervisor does. Its purpose is to make `claude`'s PTY output observable on runtimes where the production supervisor cannot — most notably Bun, whose NAPI compat layer does not surface `node-pty`'s `onData` callbacks. With the harness you can see what `claude` actually prints during boot, between the dev-channels confirm and the channel-server spawn, and after a channel notification arrives.
+`bin/ccb-launcher.cjs` (installed as the `ccb-launcher` bin) is a pure-Node companion that pairs with `ccb serve` to provide a working real-`claude` launcher on hosts where Bun's PTY layer can't drive `claude` directly. It spawns `claude` with the exact arg set `ClaudeCodeSupervisor` would generate, auto-confirms the dev-channels warning the same way the supervisor does, and tees every PTY byte to a log file. Running under Node sidesteps Bun's NAPI gap (the `node-pty` `onData` callback fires normally), so `claude` boots interactively and the channel server connects back to the bridge.
 
-Use it when managed launch (`ccb demo --supervisor=claude`) hangs at `supervisor.start timed out` or produces `agent.done reason=channel-disconnected` instead of a real reply, and you want to know what `claude` was doing inside the PTY.
+The launcher is the supported real-`claude` driver on Bun-on-Linux until upstream Bun's NAPI completeness lands (`oven-sh/bun#25822`). See `docs/ARCHITECTURE.md` § "Choosing a supervisor" for the architectural framing.
+
+Use it as the everyday real-`claude` driver on Bun-on-Linux, OR as a diagnostic tool when managed launch (`ccb demo --supervisor=claude`) hangs at `supervisor.start timed out` or produces `agent.done reason=channel-disconnected` instead of a real reply.
 
 ### Setup
 
@@ -194,16 +196,18 @@ ENDPOINT=127.0.0.1:18486
       --endpoint "$ENDPOINT" --session-id "$SESSION_ID" \
       --format json > /tmp/ccb-verify-serve.log 2>&1 &
 
-# 3. In a second terminal (real TTY required), launch the harness pointed at
+# 3. In a second terminal (real TTY required), launch ccb-launcher pointed at
 #    the same bridge. NODE_PATH resolves @homebridge/node-pty-prebuilt-multiarch
-#    from the workspace's isolated install layout.
+#    from the workspace's isolated install layout when running from a source
+#    checkout (a published install would put the dep at top-level node_modules
+#    and NODE_PATH would be unnecessary).
 NODE_PATH="$PWD/packages/process/node_modules" \
-  node scripts/diagnostics/claude-pty-trace.cjs \
+  node bin/ccb-launcher.cjs \
     --endpoint "$ENDPOINT" --session-id "$SESSION_ID"
 
 # 4. Watch the bridge's JSONL event stream and the PTY trace log:
 tail -f /tmp/ccb-verify-serve.log
-tail -f /tmp/claude-pty-trace.log
+tail -f /tmp/ccb-launcher.log
 ```
 
 A successful run produces the canonical reply chain in the bridge log:
@@ -215,28 +219,23 @@ A successful run produces the canonical reply chain in the bridge log:
 {"type":"agent.done", ...}
 ```
 
-### Why the harness exists
+### Why the launcher exists
 
-`ClaudeCodeSupervisor` reads claude's PTY via `node-pty`'s `onData` callback. Under Bun on Linux at the time of writing, NAPI gaps prevent that callback from firing reliably — the supervisor cannot see what `claude` prints, so debugging managed-launch failures is blind. The harness sidesteps Bun by spawning `claude` from a Node process where `node-pty`'s `onData` works, then logs every byte. The bridge itself (the `ccb serve` half above) still runs under Bun and exercises the production code path.
-
-### When it is more than diagnostic
-
-The harness pairs `ServeSupervisor` (under Bun) with an external `claude` launcher (under Node) — the same pattern any process orchestrator would use. It is the **current best Linux+Bun real-claude path** until Bun's NAPI gap closes. See `docs/ARCHITECTURE.md` § "Choosing a supervisor" for the broader story; the short version is that `ClaudeCodeSupervisor` is a convenience layer and `ServeSupervisor` + external launcher is the load-bearing pattern. The harness happens to be a perfectly good external launcher: 200 lines of clear Node, observable PTY output, the same auto-confirm logic the production supervisor uses.
-
-If you want to ship this pattern beyond local development, the harness only needs a CLI rename, slightly nicer docs, and a `bin` entry — no new code.
+`ClaudeCodeSupervisor` reads claude's PTY via `node-pty`'s `onData` callback. Under Bun on Linux at the time of writing, NAPI gaps prevent that callback from firing reliably — the supervisor can't observe what `claude` prints. `ccb-launcher` sidesteps Bun by spawning `claude` from a Node process where `node-pty`'s `onData` works, then logs every byte. The bridge itself (the `ccb serve` half above) still runs under Bun and exercises the production code path. See `docs/ARCHITECTURE.md` § "Choosing a supervisor" for the broader architectural story.
 
 ### CLI options
 
 - `--endpoint <host:port>` — bridge control endpoint (default `127.0.0.1:18484`).
 - `--session-id <uuid>` — required; must match the bridge's `--session-id`.
-- `--log <path>` — PTY trace log file (default `/tmp/claude-pty-trace.log`).
-- `--mcp-config <path>` — override the temp `.mcp.json` path the harness writes.
+- `--log <path>` — PTY trace log file (default `/tmp/ccb-launcher.log`).
+- `--mcp-config <path>` — override the temp `.mcp.json` path the launcher writes.
+- `-h`, `--help` — show help and exit.
 
-The harness exits when `claude` exits. Ctrl-C tears down `claude` and removes the temp config.
+The launcher exits when `claude` exits. Ctrl-C tears down `claude` and removes the temp config.
 
 ### Common diagnoses
 
-| symptom in `/tmp/claude-pty-trace.log` | likely cause |
+| symptom in `/tmp/ccb-launcher.log` | likely cause |
 |---|---|
 | WARNING block prints but no `Enter to confirm` line | claude's UI text drifted; update the supervisor's hint constant |
 | Hint visible but no further activity | auto-confirm `\r` isn't reaching claude; check the harness's `[harness] auto-confirm` lines for write failures |

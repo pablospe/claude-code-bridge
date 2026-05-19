@@ -6,6 +6,9 @@
     "packages/*",
     "apps/*"
   ],
+  "bin": {
+    "ccb-launcher": "./bin/ccb-launcher.cjs"
+  },
   "scripts": {
     "test": "bun test --pass-with-no-tests",
     "typecheck": "tsc -b",
