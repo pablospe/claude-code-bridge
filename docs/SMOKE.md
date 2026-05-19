@@ -2,7 +2,7 @@
 
 This document describes how to verify the end-to-end Claude Code Bridge loop against a real `claude` process. The automated test track in `bun test` covers the protocol shape via the `MockSupervisor`; this document covers the real-claude track.
 
-Managed launch is the primary path: the bridge spawns and supervises `claude` itself via `node-pty`, so a single command drives one terminal end-to-end. The three-terminal manual procedure is preserved as a fallback for hosts where `node-pty` cannot build/load.
+Managed launch is the primary path: the bridge spawns and supervises `claude` itself via `node-pty`, so a single command drives one terminal end-to-end. The two-terminal manual procedure is preserved as a fallback for hosts where `node-pty` cannot build/load.
 
 ## Managed launch (recommended)
 
@@ -28,7 +28,9 @@ Preconditions: `claude` on `PATH`, already authenticated (`claude login` at leas
 - Channels are a Claude Code research-preview feature. `claude` must be launched with `--dangerously-load-development-channels server:ccb` for the bridge channel to be exposed; this flag will not be required forever, but it is required during the preview window.
 - A real terminal. The `claude` boot path checks for a TTY on stdout and bails to `--print` mode otherwise (verified empirically by the bridge research). There is no fully-headless scripted variant for this reason.
 
-## Manual fallback: three-terminal procedure
+## Manual fallback: two-terminal procedure
+
+(Two terminals minimum — Terminal 1 hosts the bridge and reads your prompt from stdin; Terminal 2 runs `claude`. The optional Terminal 3 in the steps below is only for tailing the JSONL log; it carries no role in the protocol.)
 
 The procedure below is the fallback for hosts where `node-pty` cannot build or load (managed launch raises `LauncherUnavailableError` in that case). It is also the original M1 verification path and is preserved verbatim.
 
@@ -239,7 +241,7 @@ The harness exits when `claude` exits. Ctrl-C tears down `claude` and removes th
 
 ## Known limitations
 
-- **Managed launch requires `node-pty`.** The supervisor wraps `claude` in `node-pty` to satisfy its boot-time TTY check while keeping reply/progress data off the PTY. If `node-pty` cannot build/load on the host, `ClaudeCodeSupervisor.start` throws `LauncherUnavailableError` and the three-terminal fallback above is the supported path.
+- **Managed launch requires `node-pty`.** The supervisor wraps `claude` in `node-pty` to satisfy its boot-time TTY check while keeping reply/progress data off the PTY. If `node-pty` cannot build/load on the host, `ClaudeCodeSupervisor.start` throws `LauncherUnavailableError` and the two-terminal fallback above is the supported path.
 - **TTY requirement.** Because `claude` exits to `--print` mode when stdout is not a TTY, the scripted smoke that does not use the managed-launch PTY is best-effort only. Managed launch resolves this end-to-end.
 - **Research-preview channels.** The `--dangerously-load-development-channels server:ccb` flag is required during the channels research preview. Once `claude/channel` is on the approved allowlist, that flag will no longer be needed.
 - **Bridge UUID vs wire UUID.** The `--session-id` flag is the wire id the channel server speaks to the bridge with. The bridge mints its own internal UUID for events and the JSONL store. They are intentionally independent.

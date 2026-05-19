@@ -61,5 +61,5 @@ Flags:
 
 ## Where to go next
 
-- [`SMOKE.md`](./SMOKE.md) — the real-`claude` smoke procedure (managed-launch single-command path and the three-terminal manual fallback).
+- [`SMOKE.md`](./SMOKE.md) — the real-`claude` smoke procedure (managed-launch single-command path and the two-terminal manual fallback).
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — how the commands fit into the larger bridge / channel-server / claude topology.

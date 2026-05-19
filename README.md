@@ -37,7 +37,7 @@ See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full design, proces
 
 ## Status
 
-The protocol shape works end-to-end against an in-process mock and against a real `claude` driven by the bridge's managed launch (the bridge spawns and supervises `claude` itself via `node-pty`; requires `node-pty` to build/load on the host). The earlier three-terminal manual smoke is preserved as a fallback for hosts where `node-pty` cannot load.
+The protocol shape works end-to-end against an in-process mock and against a real `claude` driven by the bridge's managed launch (the bridge spawns and supervises `claude` itself via `node-pty`; requires `node-pty` to build/load on the host). The earlier two-terminal manual smoke is preserved as a fallback for hosts where `node-pty` cannot load.
 
 ## Quick start
 
@@ -75,7 +75,7 @@ Expected (UUIDs vary):
 [session.ended]
 ```
 
-For the full real-`claude` walkthrough — managed launch, plugin install, and the three-terminal manual fallback — see [`docs/SMOKE.md`](./docs/SMOKE.md).
+For the full real-`claude` walkthrough — managed launch, plugin install, and the two-terminal manual fallback — see [`docs/SMOKE.md`](./docs/SMOKE.md).
 
 ## Requirements
 
