@@ -1,11 +1,10 @@
 {
   "name": "ccb",
-  "version": "0.0.1",
-  "description": "Bridge that drives interactive Claude Code sessions from external UIs; channel surface for the @ccb stack. The MCP server entry spawns the workspace channel-server bin via ${CLAUDE_PROJECT_DIR}, so users start claude from the claude-code-bridge repo root. CCB_BRIDGE_ENDPOINT and CCB_SESSION_ID are populated at session start by ccb itself; the values here are placeholders meant to be overridden by the bridge before claude launches.",
+  "version": "0.1.0",
+  "description": "Bridge that drives interactive Claude Code sessions from external UIs via the channels MCP surface. Plugin users MUST first install the bin package globally: `bun add -g claudecode-bridge`. The plugin invokes `ccb-channel-server` and `ccb-hook-relay` by bare bin name; without the global install those bins are not on PATH and claude reports `command not found`. CCB_BRIDGE_ENDPOINT and CCB_SESSION_ID placeholders are populated at session start by the bridge.",
   "mcpServers": {
     "ccb": {
-      "command": "bun",
-      "args": ["${CLAUDE_PROJECT_DIR}/packages/mcp-channel/src/bin.ts"],
+      "command": "ccb-channel-server",
       "env": {
         "CCB_BRIDGE_ENDPOINT": "${CCB_BRIDGE_ENDPOINT}",
         "CCB_SESSION_ID": "${CCB_SESSION_ID}"
@@ -16,5 +15,37 @@
     {
       "server": "ccb"
     }
-  ]
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ccb-hook-relay PreToolUse"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ccb-hook-relay PostToolUse"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ccb-hook-relay Stop"
+          }
+        ]
+      }
+    ]
+  }
 }

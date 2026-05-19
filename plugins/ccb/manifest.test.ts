@@ -1,11 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const manifestPath = resolve(here, ".claude-plugin/plugin.json");
-const repoRoot = resolve(here, "../..");
 
 interface PluginManifest {
   readonly name: string;
@@ -13,6 +11,7 @@ interface PluginManifest {
   readonly version?: string;
   readonly mcpServers?: Record<string, McpServerEntry>;
   readonly channels?: ReadonlyArray<ChannelEntry>;
+  readonly hooks?: Record<string, ReadonlyArray<HookMatcher>>;
 }
 
 interface McpServerEntry {
@@ -23,6 +22,16 @@ interface McpServerEntry {
 
 interface ChannelEntry {
   readonly server: string;
+}
+
+interface HookMatcher {
+  readonly matcher?: string;
+  readonly hooks: ReadonlyArray<HookCommand>;
+}
+
+interface HookCommand {
+  readonly type: "command";
+  readonly command: string;
 }
 
 async function readManifest(): Promise<PluginManifest> {
@@ -45,37 +54,26 @@ describe("ccb plugin manifest", () => {
     expect(manifest.name).toBe("ccb");
   });
 
-  test("description is present and a non-empty string", async () => {
+  test("description states the `bun add -g` global-install prereq", async () => {
     const manifest = await readManifest();
     expect(typeof manifest.description).toBe("string");
-    expect(manifest.description?.length ?? 0).toBeGreaterThan(0);
+    expect(manifest.description).toContain("bun add -g");
+    expect(manifest.description).toContain("claudecode-bridge");
   });
 
-  test("declares the ccb MCP server entry", async () => {
-    const manifest = await readManifest();
-    expect(manifest.mcpServers).toBeDefined();
-    expect(manifest.mcpServers?.ccb).toBeDefined();
-    const ccb = manifest.mcpServers?.ccb;
-    expect(typeof ccb?.command).toBe("string");
-    expect(Array.isArray(ccb?.args)).toBe(true);
-    expect(ccb?.args?.length ?? 0).toBeGreaterThan(0);
-  });
-
-  test("mcp server entry args resolve to a real channel-server file", async () => {
+  test("mcp server entry uses the bare bin name (no path, no bunx, no shell metachars)", async () => {
     const manifest = await readManifest();
     const ccb = manifest.mcpServers?.ccb;
-    const lastArg = ccb?.args?.[ccb.args.length - 1] ?? "";
-    const placeholder = `\${CLAUDE_PROJECT_DIR}`;
-    const resolved = lastArg.replace(placeholder, repoRoot);
-    expect(existsSync(resolved)).toBe(true);
+    expect(ccb?.command).toBe("ccb-channel-server");
+    // No args: the bare bin reads CCB_BRIDGE_ENDPOINT / CCB_SESSION_ID from env.
+    expect(ccb?.args ?? []).toEqual([]);
   });
 
-  test("mcp server env declares CCB_BRIDGE_ENDPOINT and CCB_SESSION_ID", async () => {
+  test("mcp server env declares CCB_BRIDGE_ENDPOINT and CCB_SESSION_ID placeholders", async () => {
     const manifest = await readManifest();
     const env = manifest.mcpServers?.ccb?.env ?? {};
-    expect(Object.keys(env)).toEqual(
-      expect.arrayContaining(["CCB_BRIDGE_ENDPOINT", "CCB_SESSION_ID"]),
-    );
+    expect(env.CCB_BRIDGE_ENDPOINT).toBe("${CCB_BRIDGE_ENDPOINT}");
+    expect(env.CCB_SESSION_ID).toBe("${CCB_SESSION_ID}");
   });
 
   test("declares a channel bound to the ccb mcp server", async () => {
@@ -84,5 +82,47 @@ describe("ccb plugin manifest", () => {
     expect(manifest.channels?.length ?? 0).toBeGreaterThan(0);
     const channel = manifest.channels?.find((c) => c.server === "ccb");
     expect(channel).toBeDefined();
+  });
+
+  test("declares hooks for the three M3 minimum events", async () => {
+    const manifest = await readManifest();
+    expect(manifest.hooks).toBeDefined();
+    const eventNames = Object.keys(manifest.hooks ?? {});
+    expect(eventNames).toEqual(
+      expect.arrayContaining(["PreToolUse", "PostToolUse", "Stop"]),
+    );
+  });
+
+  test("each hook command invokes `ccb-hook-relay <event>` by bare bin name", async () => {
+    const manifest = await readManifest();
+    const hooks = manifest.hooks ?? {};
+    for (const event of ["PreToolUse", "PostToolUse", "Stop"] as const) {
+      const matchers = hooks[event] ?? [];
+      expect(matchers.length).toBeGreaterThan(0);
+      const first = matchers[0]?.hooks?.[0];
+      expect(first?.type).toBe("command");
+      expect(first?.command).toBe(`ccb-hook-relay ${event}`);
+    }
+  });
+
+  test("manifest text contains zero `${CLAUDE_PROJECT_DIR}` references", async () => {
+    // The dev-flag channels mode uses CLAUDE_PROJECT_DIR; the published
+    // plugin manifest does not. This guard fails loudly if the workspace
+    // path leaks back in via copy-paste from a future edit.
+    const text = await Bun.file(manifestPath).text();
+    expect(text).not.toContain("CLAUDE_PROJECT_DIR");
+  });
+
+  test("manifest commands do not invoke `bunx` (would risk M3 500ms hook budget)", async () => {
+    const manifest = await readManifest();
+    const ccbCommand = manifest.mcpServers?.ccb?.command ?? "";
+    expect(ccbCommand.startsWith("bunx")).toBe(false);
+    for (const matchers of Object.values(manifest.hooks ?? {})) {
+      for (const matcher of matchers) {
+        for (const hook of matcher.hooks) {
+          expect(hook.command.startsWith("bunx")).toBe(false);
+        }
+      }
+    }
   });
 });
