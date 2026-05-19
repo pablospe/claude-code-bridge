@@ -249,6 +249,75 @@ The launcher exits when `claude` exits. Ctrl-C tears down `claude` and removes t
 - **Research-preview channels.** The `--dangerously-load-development-channels server:ccb` flag is required during the channels research preview. Once `claude/channel` is on the approved allowlist, that flag will no longer be needed.
 - **Bridge UUID vs wire UUID.** The `--session-id` flag is the wire id the channel server speaks to the bridge with. The bridge mints its own internal UUID for events and the JSONL store. They are intentionally independent.
 
+## Real-claude smoke with tool-call visibility (M3)
+
+Drives a managed-launch turn through real `claude` with the hook relay registered, so `tool.event` records appear in the JSONL event stream alongside `agent.reply` / `agent.done`. After M3 a consumer sees what `claude` *did* (Bash commands, Read/Edit/Write calls, …), not just what it finally said. See `docs/M3.md` for the design.
+
+The minimum hook set is three events: `PreToolUse`, `PostToolUse`, and `Stop`. The bridge fans every hook frame into a `BridgeEvent.tool.event` record; consumers pair Pre/Post by `payload.data.tool_use_id`.
+
+### Programmatic (gated test)
+
+The repo ships a `CCB_RUN_REAL_CLAUDE=1`-gated integration test that drives a deterministic prompt through real `claude` and asserts (a) at least one `tool.event` per minimum-set event, (b) Pre/Post pairing is in order by `tool_use_id`, and (c) the first `Stop` precedes the terminal event:
+
+```bash
+CCB_RUN_REAL_CLAUDE=1 bun test packages/claude-code/src/claude-supervisor.hooks.integration.test.ts
+```
+
+Without the env var the test prints a skip notice and passes, so the gate is the only thing standing between a fresh clone and a green run.
+
+### Manual (unmanaged launch with `ccb hooks-config`)
+
+For hosts that cannot run managed launch (`node-pty` unavailable, or you just want to see the bytes), `ccb hooks-config` emits the settings.json snippet that registers `ccb-hook-relay` for the three minimum events.
+
+```bash
+# 1. Pick a fixed endpoint + session id so all three pieces agree:
+SESSION_ID=$(uuidgen)
+ENDPOINT=127.0.0.1:18484
+
+# 2. Write the hooks settings snippet to a per-session file:
+HOOKS_SETTINGS=$(mktemp --suffix=.json)
+bun apps/ccb/src/cli.ts hooks-config --out "$HOOKS_SETTINGS"
+
+# 3. Write the .mcp.json the channel server consumes:
+MCP_CONFIG=$(mktemp --suffix=.json)
+bun apps/ccb/src/cli.ts mcp-config \
+  --endpoint "$ENDPOINT" --session-id "$SESSION_ID" --out "$MCP_CONFIG"
+
+# 4. In one terminal, host the bridge:
+bun apps/ccb/src/cli.ts serve \
+  --endpoint "$ENDPOINT" --session-id "$SESSION_ID" --format pretty
+
+# 5. In a second terminal, export the env vars the relay reads, then launch
+#    claude with both --mcp-config and --settings:
+export CCB_BRIDGE_ENDPOINT="$ENDPOINT"
+export CCB_SESSION_ID="$SESSION_ID"
+claude --dangerously-load-development-channels server:ccb \
+  --mcp-config "$MCP_CONFIG" \
+  --settings "$HOOKS_SETTINGS" \
+  --allowed-tools "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done"
+
+# 6. Inside claude, ask: "Read README.md and report the first line".
+#    The bridge's terminal should now interleave tool.event lines between
+#    the agent.reply / agent.done lines.
+```
+
+`CCB_BRIDGE_ENDPOINT` and `CCB_SESSION_ID` are required: the relay bin (`bunx ccb-hook-relay`) reads both from its environment and tags every frame with the session id. Without them the bin logs `ccb-hook-relay: missing CCB_SESSION_ID` to stderr and exits 0 — claude's hook never blocks.
+
+Expected event interleaving:
+
+```
+[session.started]  sid=…
+[agent.reply]      "I'll take a look at README.md."
+[tool.event]       PreToolUse  Read   {file_path:"…/README.md"}
+[tool.event]       PostToolUse Read   (1.2 KB, truncated:false)
+[agent.reply]      "The first line is `# Claude Code Bridge`."
+[tool.event]       Stop        (per-message)
+[agent.done]       final=true
+[session.ended]    reason="agent done"
+```
+
+The managed-launch path (`bun apps/ccb/src/cli.ts demo --supervisor=claude`) does not yet expose a `--hooks` flag from the CLI; the supervisor option is wired (`hooks: { events: [...] }`) and is what the gated integration test above exercises.
+
 ## Channels availability gate
 
 The channels feature is gated at runtime independent of the command-line flag. If `claude --debug` logs

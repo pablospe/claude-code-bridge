@@ -77,6 +77,8 @@ Expected (UUIDs vary):
 
 For the full real-`claude` walkthrough — managed launch, plugin install, and the two-terminal manual fallback — see [`docs/SMOKE.md`](./docs/SMOKE.md).
 
+**Observational tool-call visibility.** A hook relay can register `ccb-hook-relay` for claude's `PreToolUse` / `PostToolUse` / `Stop` events so the event stream carries `tool.event` records alongside `agent.reply` / `agent.done`. Consumers see what `claude` *did* (Bash commands, Read/Edit/Write calls, …), not just what it said, with Pre/Post pairs correlated by `tool_use_id`. See [`docs/M3.md`](./docs/M3.md) for the design and [`docs/SMOKE.md`](./docs/SMOKE.md) for end-to-end verification.
+
 ## Requirements
 
 - [Bun](https://bun.sh) for the package manager, test runner, and TypeScript runtime.
