@@ -7,28 +7,28 @@ A TypeScript library + CLI that lets external UIs and orchestrators drive an alr
 Channels for inbound general content; MCP tools for outbound. A consumer pushes a message in via a Claude Code channel (`notifications/claude/channel`); Claude responds by calling one of three MCP tools (`bridge_reply` / `bridge_progress` / `bridge_done`); every turn is persisted as an append-only JSONL event log.
 
 ```text
-                   inbound: channels
-                  ──────────────────▶
-
-  ┌───────────────┐                   ┌───────────────────────┐
-  │   Consumer    │ ─ sendMessage() ▶ │  Bridge process       │
-  │   (your UI /  │                   │   EventBus            │
-  │   orchestrator)│ ◀──── events() ──│   JsonlEventStore     │
-  └───────────────┘                   │   ControlServer (TCP) │
-                                      └──────────┬────────────┘
-                                                 │ JSON lines
-                                                 ▼
-                                      ┌───────────────────────┐
-                                      │ Channel server        │
-                                      │ (stdio child of       │
-                                      │  `claude`)            │
-                                      └──────────┬────────────┘
-                                          MCP    │    MCP
-                                  notification ◀─┼─▶ tool call
-                                                 ▼
-                                      ┌───────────────────────┐
-                                      │ `claude` process      │
-                                      └───────────────────────┘
+        +----------------------+
+        |       Consumer       |
+        |  ccb demo, T3 Code,  |
+        |      agtx, ...       |
+        +----------------------+
+           |                ^
+           | sendMessage()  | events(sessionId)
+           v                |
+        +----------------------+
+        |        Bridge        |
+        |   session state +    |
+        |      event log       |
+        +----------------------+
+           ||               ^^
+           || channels      || MCP tools
+           || (inbound)     || (outbound)
+           vv               ||
+        +----------------------+
+        |      Claude Code     |
+        |   claude --channels  |
+        |          ...         |
+        +----------------------+
 ```
 
 This is not an ACPX replacement and not a universal agent runtime. It exists for the specific case where you want an already-authenticated interactive `claude` to be the runtime.

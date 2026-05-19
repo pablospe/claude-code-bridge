@@ -18,35 +18,59 @@ MCP server that Claude Code spawns as its own child.
 
 ## The diagram
 
+```mermaid
+flowchart TB
+  Consumer["Consumer<br/><i>T3 Code, openclaw, opencode, agtx, ...</i>"]
+  Bridge["Bridge<br/><i>session state + event log</i>"]
+  Claude["Claude Code<br/><i>claude --channels …</i>"]
+
+  Consumer -- "sendMessage()" --> Bridge
+  Bridge -- "events(sessionId)" --> Consumer
+
+  Bridge == "channels (inbound)" ==> Claude
+  Claude == "MCP tools (outbound)" ==> Bridge
+```
+
+The Consumer talks to the Bridge with a plain async API. The Bridge talks to
+Claude over two one-way pipes: channels carry inbound content into the session,
+MCP tools carry outbound content back. The channel-server process that physically
+implements those pipes is shown in the detailed diagram above.
+
+
+### Detailed diagram
+
 ```text
                   inbound: channels (one direction)
-                  ─────────────────────────────────▶
+                  ---------------------------------->
 
-  ┌───────────────┐    sendMessage()    ┌───────────────────────────────────┐
-  │  Consumer     │ ──────────────────▶ │  Bridge process                   │
-  │  (ccb demo,   │                     │  ┌──────────────────────────────┐ │
-  │   T3 Code,    │ ◀────────────────── │  │ EventBus + JsonlEventStore   │ │
-  │   agtx, ...)  │  events(sessionId)  │  │ Supervisor (Mock | Serve |   │ │
-  └───────────────┘                     │  │  ClaudeCode)                 │ │
-                                        │  │ ControlServer (loopback TCP) │ │
-                                        │  └──────────────┬───────────────┘ │
-                                        └─────────────────┼─────────────────┘
-                                                          │ JSON-lines
-                                                          │ deliver / tool
-                                                          ▼
-  ┌─────────────────────────────┐        spawn       ┌──────────────────────┐
-  │ Claude Code process         │ ─────────────────▶ │ Channel server       │
-  │ (claude --channels ...)     │  stdio MCP child   │ (ccb-channel-server) │
-  │                             │ ◀───────────────── │  ControlClient       │
-  │ notifications/claude/channel│  MCP notification  │  MCP tool handlers   │
-  │ <channel source="ccb" ...>  │ ─────────────────▶ │  bridge_reply/       │
-  │ bridge_reply / _progress /  │  MCP tool call     │  _progress / _done   │
-  │ _done                       │                    │                      │
-  └─────────────────────────────┘                    └──────────────────────┘
+  +---------------+    sendMessage()    +-----------------------------------+
+  |  Consumer     | ------------------> |  Bridge process                   |
+  |  (ccb demo,   |                     |  +------------------------------+ |
+  |   T3 Code,    | <------------------ |  | EventBus + JsonlEventStore   | |
+  |   agtx, ...)  |  events(sessionId)  |  | Supervisor (Mock | Serve |   | |
+  +---------------+                     |  |  ClaudeCode)                 | |
+                                        |  | ControlServer (loopback TCP) | |
+                                        |  +--------------+---------------+ |
+                                        +-----------------+-----------------+
+                                                          | JSON-lines
+                                                          | deliver / tool
+                                                          v
+  +-----------------------------+        spawn       +----------------------+
+  | Claude Code process         | -----------------> | Channel server       |
+  | (claude --channels ...)     |  stdio MCP child   | (ccb-channel-server) |
+  |                             | <----------------- |  ControlClient       |
+  | notifications/claude/channel|  MCP notification  |  MCP tool handlers   |
+  | <channel source="ccb" ...>  | -----------------> |  bridge_reply/       |
+  | bridge_reply / _progress /  |  MCP tool call     |  _progress / _done   |
+  | _done                       |                    |                      |
+  +-----------------------------+                    +----------------------+
 
-                  ◀─────────────────────────────────
+                  <----------------------------------
                   outbound: MCP tools (other direction)
 ```
+
+
+
 
 ## Process topology
 
