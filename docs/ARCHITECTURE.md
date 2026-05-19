@@ -183,6 +183,24 @@ process. The four packages that make up this surface:
   `ClaudeCodeSupervisor` managed-launch implementation.
 - `apps/ccb` (`@ccb/cli`) — developer CLI (`demo`, `mcp-config`, `serve`).
 
+## Published shape
+
+The npm package `claudecode-bridge` is the single publish artifact. It
+ships the bundled library entry (`dist/index.js`) with the locked 0.1.0
+public surface (`Bridge`, `BridgeEvent`, `JsonlEventStore`,
+`claudeCodeSupervisorFactory`, and the rest of the symbols listed in
+[`docs/M4.md`](./M4.md)); four bins — `ccb`, `ccb-channel-server`,
+`ccb-hook-relay`, `ccb-launcher` — where the first three are bundled
+from TypeScript via `bun build --target=node` and `ccb-launcher.cjs` is
+a pre-existing CommonJS bin that ships verbatim; and the plugin manifest
+at `plugins/ccb/.claude-plugin/plugin.json` plus the marketplace
+declaration at `.claude-plugin/marketplace.json`, so a `git`-URL-based
+`/plugin marketplace add` works against the published GitHub repo AND
+the bins are on PATH after a one-time `bun add -g claudecode-bridge`.
+Internal `@ccb/core`, `@ccb/mcp-channel`, `@ccb/claude-code`, and
+`@ccb/process` workspaces stay `"private": true` and are bundled into
+`dist/`; the public library surface is ESM-only.
+
 ## Choosing a supervisor
 
 The `Supervisor` interface has three production-relevant implementations. They share the

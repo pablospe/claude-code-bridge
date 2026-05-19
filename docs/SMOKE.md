@@ -318,6 +318,62 @@ Expected event interleaving:
 
 The managed-launch path (`bun apps/ccb/src/cli.ts demo --supervisor=claude`) does not yet expose a `--hooks` flag from the CLI; the supervisor option is wired (`hooks: { events: [...] }`) and is what the gated integration test above exercises.
 
+## Real install from npm (M4)
+
+Validates the publish artifact end-to-end against real `claude`. The M4
+plugin manifest invokes bare bin names (`ccb-channel-server`,
+`ccb-hook-relay`) and relies on a prior `bun add -g claudecode-bridge`
+to put them on PATH. These smokes prove that contract.
+
+### Manual: install from a packed tarball
+
+```bash
+bun run build && bun pm pack
+# produces claudecode-bridge-0.1.0.tgz in the repo root
+
+mkdir -p /tmp/ccb-install-smoke && cd /tmp/ccb-install-smoke
+bun init -y
+bun add /path/to/claudecode-bridge-0.1.0.tgz
+export PATH="$PWD/node_modules/.bin:$PATH"
+
+ccb-channel-server --help    # sanity check: bundled bin loads
+ccb-hook-relay --help        # sanity check: bundled bin loads
+ccb --help                   # sanity check: CLI loads
+```
+
+Then in a separate scratch directory point a fresh `claude` session at
+the local marketplace and install the plugin:
+
+```text
+/plugin marketplace add /path/to/claude-code-bridge
+/plugin install ccb@claude-code-bridge
+```
+
+Start `claude` with a bridge already running on the loopback endpoint
+the plugin's `mcpServers.ccb` env wires through, send a deterministic
+prompt (e.g. "what is 11 squared?"), and watch the bridge's event stream
+for `tool.event` records interleaved with `agent.reply` / `agent.done`.
+
+### Programmatic: gated end-to-end test
+
+```bash
+CCB_RUN_PLUGIN_SMOKE=1 bun test scripts/smoke-plugin-install.ts
+```
+
+The gated test (delivered by M4.5) builds the tarball, installs it into
+a temp dir so `ccb-channel-server` and `ccb-hook-relay` land in
+`<tmp>/node_modules/.bin/`, prepends that `.bin` to `PATH`, points
+claude's plugin marketplace at the local repo, runs the M3.7
+deterministic prompt through real `claude`, and asserts the same
+coverage and Pre/Post ordering guarantees as the M3.7 hooks-integration
+test — but exercising the **public install path** rather than the
+managed-launch `hooks:` option. Without the env var the test prints a
+skip notice and passes.
+
+Run this gated test once before every `bun publish` of a new tarball.
+It is the only place we prove the published artifact + plugin manifest
+deliver `tool.event` records to the bridge as a unit.
+
 ## Channels availability gate
 
 The channels feature is gated at runtime independent of the command-line flag. If `claude --debug` logs
