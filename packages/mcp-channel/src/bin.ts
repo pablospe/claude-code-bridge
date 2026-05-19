@@ -100,10 +100,31 @@ async function main(): Promise<void> {
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
 
+  // Connect MCP stdio and TCP control IN PARALLEL.
+  //
+  // Sequential ordering creates a real race window:
+  //
+  // - If controlClient.connect() finishes first, its hello fires at the
+  //   bridge, the bridge's supervisor.start gate clears, and the consumer
+  //   may call bridge.sendMessage() before handle.server.connect(stdio) has
+  //   attached the MCP transport. The deliver flows
+  //   ControlServer.deliver -> onDeliver -> handle.deliver -> server.notification,
+  //   but the MCP SDK's Protocol uses `this._transport?.send()` — with no
+  //   transport, the call silently no-ops. The notification is lost and
+  //   claude never sees the message.
+  //
+  // - If handle.server.connect(stdio) finishes first under a slow boot, the
+  //   bridge waits longer for hello, which on a fast host can cross the
+  //   supervisor's startTimeoutMs.
+  //
+  // Promise.all collapses the race to a few microseconds: the hello and the
+  // stdio attachment land effectively at the same time. The bridge-side
+  // ControlServer.deliver hello-gate (default 30s) covers any residual skew.
+  const stdio = new StdioServerTransport();
   let connectTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      controlClient.connect(),
+      Promise.all([controlClient.connect(), handle.server.connect(stdio)]),
       new Promise<never>((_resolve, reject) => {
         connectTimer = setTimeout(
           () => reject(new Error(`connect timed out after ${connectTimeoutMs}ms`)),
@@ -120,9 +141,6 @@ async function main(): Promise<void> {
     process.exit();
   }
   if (connectTimer) clearTimeout(connectTimer);
-
-  const stdio = new StdioServerTransport();
-  await handle.server.connect(stdio);
 }
 
 main().catch(async (err: unknown) => {
