@@ -1,19 +1,28 @@
 #!/usr/bin/env bun
-// Build pipeline for claudecode-bridge — produces dist/ with bundled bins,
-// a self-contained library entry, and TypeScript declarations.
+// Build pipeline for claudecode-bridge: orchestrates the bin + library
+// bundles via `bun build`, the declaration emit via `tsc`, and the
+// post-processing hacks documented in `./build-post-process.ts`.
 //
-// Bun bundles each bin and the library entry with --target=node. The four
-// runtime dependencies declared in the root package.json stay external so the
-// native node-pty bindings load correctly and the bundles do not duplicate
-// large libraries.
+// Workflow:
+//   1. clean dist/
+//   2. for each entry → `bun build --target=node` → dist/bin/<name>.js or dist/index.js
+//   3. for each bin → strip source shebang, prepend Node shebang, fix import.meta.main
+//   4. `tsc --emitDeclarationOnly` → dist/types/...
+//   5. flatten dist/types/src/index.d.ts to dist/types/index.d.ts and rewrite
+//      `@ccb/*` specifiers in the emitted .d.ts files to relative paths
+//
+// The hacks in step 3 and 5 live in `./build-post-process.ts` with WHY
+// comments referencing the upstream behaviors that necessitate them.
 
-import { chmod, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { chmod, mkdir, rm } from "node:fs/promises";
+import { resolve } from "node:path";
 import { $ } from "bun";
+import { flattenDeclarations, rewriteBinShebang } from "./build-post-process.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const DIST = resolve(ROOT, "dist");
 const BIN_DIR = resolve(DIST, "bin");
+const TYPES_DIR = resolve(DIST, "types");
 
 const EXTERNALS = [
   "@homebridge/node-pty-prebuilt-multiarch",
@@ -29,11 +38,7 @@ interface BundleSpec {
 }
 
 const BUNDLES: readonly BundleSpec[] = [
-  {
-    entry: "apps/ccb/src/cli.ts",
-    outfile: "dist/bin/ccb.js",
-    bin: true,
-  },
+  { entry: "apps/ccb/src/cli.ts", outfile: "dist/bin/ccb.js", bin: true },
   {
     entry: "packages/mcp-channel/src/bin.ts",
     outfile: "dist/bin/ccb-channel-server.js",
@@ -44,14 +49,8 @@ const BUNDLES: readonly BundleSpec[] = [
     outfile: "dist/bin/ccb-hook-relay.js",
     bin: true,
   },
-  {
-    entry: "src/index.ts",
-    outfile: "dist/index.js",
-    bin: false,
-  },
+  { entry: "src/index.ts", outfile: "dist/index.js", bin: false },
 ];
-
-const NODE_SHEBANG = "#!/usr/bin/env node\n";
 
 function log(message: string): void {
   process.stderr.write(`${message}\n`);
@@ -81,23 +80,9 @@ async function bundle(spec: BundleSpec): Promise<void> {
     throw new Error(`bun build failed for ${spec.entry} (exit ${result.exitCode})`);
   }
   if (spec.bin) {
-    await prependShebang(outfile);
+    await rewriteBinShebang(outfile);
     await chmod(outfile, 0o755);
   }
-}
-
-async function prependShebang(file: string): Promise<void> {
-  // bun build preserves the source's `#!/usr/bin/env bun` as a regular line.
-  // Strip any leading shebang(s) before prepending the canonical Node one so
-  // the published bin runs under node (not bun) and parses cleanly.
-  const current = await readFile(file, "utf8");
-  const stripped = current.replace(/^(?:#![^\n]*\n)+/, "");
-  // bun build lowers `import.meta.main` to `__require.main == __require.module`
-  // even with --target=node + ESM output — neither identifier is defined in
-  // an ESM bin under Node. The bin is invoked directly (never imported), so
-  // collapse the guard to `true` and always run main().
-  const fixed = stripped.replace(/__require\.main\s*==\s*__require\.module/g, "true");
-  await writeFile(file, NODE_SHEBANG + fixed);
 }
 
 async function emitDeclarations(): Promise<void> {
@@ -111,63 +96,8 @@ async function emitDeclarations(): Promise<void> {
     process.stderr.write(result.stderr.toString());
     throw new Error(`tsc declaration emit failed (exit ${result.exitCode})`);
   }
-  await flattenDeclarations();
-}
-
-const TYPES_DIR = resolve(DIST, "types");
-
-// tsc with rootDir=. emits dist/types/src/index.d.ts and the transitive
-// dist/types/packages/<pkg>/src/*.d.ts tree. Consumers expect the entry at
-// dist/types/index.d.ts, and the @ccb/* import specifiers inside the emitted
-// .d.ts files must be rewritten to relative paths so consumers don't need
-// the private workspace packages installed.
-async function flattenDeclarations(): Promise<void> {
   log("[build] flattening dist/types/");
-  const srcEntry = resolve(TYPES_DIR, "src", "index.d.ts");
-  const destEntry = resolve(TYPES_DIR, "index.d.ts");
-  await rename(srcEntry, destEntry);
-  await rm(resolve(TYPES_DIR, "src"), { recursive: true, force: true });
-  await rewriteWorkspaceImports(TYPES_DIR);
-}
-
-const WORKSPACE_PACKAGES: Readonly<Record<string, string>> = {
-  "@ccb/core": "packages/core/src/index",
-  "@ccb/claude-code": "packages/claude-code/src/index",
-  "@ccb/mcp-channel": "packages/mcp-channel/src/index",
-  "@ccb/process": "packages/process/src/index",
-};
-
-async function rewriteWorkspaceImports(dir: string): Promise<void> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    const path = resolve(dir, entry.name);
-    if (entry.isDirectory()) {
-      await rewriteWorkspaceImports(path);
-      continue;
-    }
-    if (!entry.name.endsWith(".d.ts")) continue;
-    const content = await readFile(path, "utf8");
-    let rewritten = content.replace(
-      /(["'])@ccb\/(core|claude-code|mcp-channel|process)\1/g,
-      (_match, quote, name) => {
-        const target = WORKSPACE_PACKAGES[`@ccb/${name}`];
-        if (!target) throw new Error(`unmapped workspace import @ccb/${name}`);
-        const absoluteTarget = resolve(TYPES_DIR, target);
-        const rel = relative(dirname(path), absoluteTarget) || ".";
-        const normalized = rel.startsWith(".") ? rel : `./${rel}`;
-        return `${quote}${normalized}${quote}`;
-      },
-    );
-    // allowImportingTsExtensions preserves the .ts suffix in emitted .d.ts —
-    // strip it so consumer toolchains resolve sibling .d.ts files normally.
-    rewritten = rewritten.replace(
-      /(["'])(\.{1,2}\/[^"']+?)\.ts\1/g,
-      (_match, quote, path) => `${quote}${path}${quote}`,
-    );
-    if (rewritten !== content) {
-      await writeFile(path, rewritten);
-    }
-  }
+  await flattenDeclarations(TYPES_DIR);
 }
 
 async function main(): Promise<void> {
