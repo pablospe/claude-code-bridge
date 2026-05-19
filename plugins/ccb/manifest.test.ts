@@ -72,7 +72,11 @@ describe("ccb plugin manifest", () => {
   test("mcp server env declares CCB_BRIDGE_ENDPOINT and CCB_SESSION_ID placeholders", async () => {
     const manifest = await readManifest();
     const env = manifest.mcpServers?.ccb?.env ?? {};
+    // The literal `${...}` strings are claude's substitution syntax, not JS
+    // template placeholders — claude resolves them at plugin-load time.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: claude-plugin substitution placeholder, not a JS template literal.
     expect(env.CCB_BRIDGE_ENDPOINT).toBe("${CCB_BRIDGE_ENDPOINT}");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: claude-plugin substitution placeholder, not a JS template literal.
     expect(env.CCB_SESSION_ID).toBe("${CCB_SESSION_ID}");
   });
 
