@@ -438,7 +438,7 @@ test("--mcp-config points at a temp .mcp.json file with absolute Bun + bin.ts pa
   expect(stillThere).toBe(false);
 });
 
-test("auto-confirm: dev-flag mode writes \\n after the 'Enter to confirm' hint", async () => {
+test("auto-confirm: dev-flag mode writes \\r after the 'Enter to confirm' hint", async () => {
   const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
     channels: "dev-flag",
   });
@@ -450,6 +450,31 @@ test("auto-confirm: dev-flag mode writes \\n after the 'Enter to confirm' hint",
   launcher.emitData("Enter to confirm · Esc to cancel\r\n");
   // Let the microtask queue flush.
   await new Promise((r) => setTimeout(r, 10));
+  expect(launcher.writes).toContain("\r");
+  await helloClient.close();
+  await supervisor.close(FAKE_SESSION_ID);
+});
+
+test("auto-confirm: hint substring matches even when claude renders ANSI CSI codes between words", async () => {
+  // Claude's actual PTY output replaces every space between words in the
+  // dev-channels warning with the CSI sequence `[1C` (cursor-forward-1).
+  // A naive substring scanner would never match this; the supervisor
+  // strips ANSI sequences before matching, so this test feeds the
+  // wire-form bytes and asserts the scanner still fires.
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
+    channels: "dev-flag",
+    // Push the blind fallback far enough out that this test only succeeds
+    // via the ANSI-aware scanner path, not the blind retry.
+    autoConfirmInitialDelayMs: 5_000,
+    autoConfirmRetryIntervalMs: 5_000,
+  });
+  await startResult;
+  // Verbatim slice of what claude 2.1.143 prints (each word break is a
+  // CSI cursor-forward, not a literal space).
+  launcher.emitData(
+    "\x1b[2C\x1b[38;5;246m\x1b[3mEnter\x1b[1Cto\x1b[1Cconfirm\x1b[1C·\x1b[1CEsc\x1b[1Cto\x1b[1Ccancel\x1b[23m\x1b[39m\r\n",
+  );
+  await new Promise((r) => setTimeout(r, 20));
   expect(launcher.writes).toContain("\r");
   await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);

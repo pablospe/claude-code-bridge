@@ -82,12 +82,34 @@ export interface ClaudeCodeSupervisorOptions {
 /**
  * Substring the dev-channels gate prints before the confirm. Verified
  * empirically against `claude --dangerously-load-development-channels` in
- * v2.1.143 — the actual UI shows "Enter to confirm · Esc to cancel" at the
- * bottom of the dev-channels warning dialog. (The earlier guess of "Press
- * Enter to continue" never matched and caused managed-launch auto-confirm
- * to silently no-op.)
+ * v2.1.143 — the rendered UI shows "Enter to confirm · Esc to cancel".
+ *
+ * IMPORTANT: claude's TUI emits each space between words as the ANSI CSI
+ * sequence `[1C` (cursor-forward-1), not a literal space byte. So a
+ * naive substring match for "Enter to confirm" against the raw PTY stream
+ * never fires. `stripAnsi()` removes CSI sequences before matching so the
+ * fast-path detection works on a runtime where onData fires (Node); the
+ * blind-write fallback is the production safety net regardless.
  */
 const DEV_CHANNELS_CONFIRM_HINT = "Enter to confirm";
+
+/**
+ * Strip ANSI CSI escape sequences from a string so the hint-substring match
+ * can compare against the rendered text rather than raw PTY bytes. The
+ * pattern is intentionally narrow (CSI escape introducer + parameter bytes
+ * + final byte in 0x40–0x7E); we do not need a full ANSI parser, just
+ * enough to drop the `[1C` etc. that claude emits between every word.
+ */
+function normalizePty(s: string): string {
+  return (
+    s
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: matching CSI escape sequences requires the ESC control byte.
+      .replace(/\x1b\[\d*[CD]/g, " ")
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: matching CSI escape sequences requires the ESC control byte.
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+  );
+}
+
 /**
  * Time before the first blind `\r` is written when the hint never surfaces
  * via onData. 3s is earlier than the original 5s single-shot because we now
@@ -433,7 +455,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
       if (buffer.length > AUTO_CONFIRM_BUFFER_MAX) {
         buffer = buffer.slice(buffer.length - AUTO_CONFIRM_BUFFER_MAX);
       }
-      if (buffer.includes(DEV_CHANNELS_CONFIRM_HINT)) {
+      if (normalizePty(buffer).includes(DEV_CHANNELS_CONFIRM_HINT)) {
         fastPath();
       }
     });
