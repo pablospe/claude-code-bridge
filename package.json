@@ -33,7 +33,7 @@
     "dist/",
     "bin/ccb-launcher.cjs",
     ".claude-plugin/",
-    "plugins/",
+    "plugins/*/.claude-plugin/",
     "README.md",
     "LICENSE"
   ],
