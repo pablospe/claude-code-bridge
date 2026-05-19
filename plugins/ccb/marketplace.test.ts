@@ -23,7 +23,7 @@ async function readMarketplace(): Promise<MarketplaceManifest> {
   return JSON.parse(text) as MarketplaceManifest;
 }
 
-describe("ccb-local marketplace", () => {
+describe("claude-code-bridge marketplace", () => {
   test("marketplace.json exists at .claude-plugin/marketplace.json", async () => {
     expect(await Bun.file(marketplacePath).exists()).toBe(true);
   });
@@ -33,9 +33,9 @@ describe("ccb-local marketplace", () => {
     expect(() => JSON.parse(text)).not.toThrow();
   });
 
-  test("declares name 'ccb-local'", async () => {
+  test("declares name 'claude-code-bridge'", async () => {
     const m = await readMarketplace();
-    expect(m.name).toBe("ccb-local");
+    expect(m.name).toBe("claude-code-bridge");
   });
 
   test("declares an owner with a name", async () => {

@@ -13,7 +13,7 @@ Flags:
 - `--timeout-ms <ms>` (default `10000`) — deadline for the whole demo turn.
 - `--start-timeout-ms <ms>` (default: bridge default of `30000`) — upper bound for `supervisor.start`; forwarded to `Bridge.startTimeoutMs`. Raise this when the underlying `claude` boots slowly.
 - `--supervisor <mock|claude>` (default `mock`) — choose between in-process MockSupervisor and the managed `claude` launch.
-- `--channels <dev-flag|plugin>` (default `dev-flag`, ignored for `--supervisor=mock`) — selects the claude channels mode. `dev-flag` uses `--dangerously-load-development-channels server:ccb`; `plugin` uses `--channels plugin:ccb@ccb-local`.
+- `--channels <dev-flag|plugin>` (default `dev-flag`, ignored for `--supervisor=mock`) — selects the claude channels mode. `dev-flag` uses `--dangerously-load-development-channels server:ccb`; `plugin` uses `--channels plugin:ccb@claude-code-bridge`.
 
 ```bash
 bun apps/ccb/src/cli.ts demo "ping" --format json

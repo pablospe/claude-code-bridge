@@ -129,7 +129,7 @@ The procedure above uses `--dangerously-load-development-channels server:ccb`, w
 
    ```
    /plugin marketplace add /home/pablo/code/claude-code-bridge
-   /plugin install ccb@ccb-local
+   /plugin install ccb@claude-code-bridge
    ```
 
    The first command points at the repo root (substitute your own checkout path) where `.claude-plugin/marketplace.json` lives. The second installs the `ccb` plugin from that marketplace.
@@ -139,7 +139,7 @@ The procedure above uses `--dangerously-load-development-channels server:ccb`, w
    ```json
    {
      "allowedChannelPlugins": [
-       { "marketplace": "ccb-local", "plugin": "ccb" }
+       { "marketplace": "claude-code-bridge", "plugin": "ccb" }
      ]
    }
    ```
@@ -149,7 +149,7 @@ The procedure above uses `--dangerously-load-development-channels server:ccb`, w
 Start `claude` from the repo root (so `${CLAUDE_PROJECT_DIR}` in the plugin manifest resolves to this workspace) with:
 
 ```bash
-claude --channels plugin:ccb@ccb-local \
+claude --channels plugin:ccb@claude-code-bridge \
   --allowed-tools "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done"
 ```
 

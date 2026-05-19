@@ -20,7 +20,7 @@ import { generateHooksSettings, generateMcpConfig, type HookEvent } from "./conf
  *
  * - `dev-flag` uses `--dangerously-load-development-channels server:ccb` and
  *   prints a "Press Enter to continue" gate the supervisor auto-confirms.
- * - `plugin` uses `--channels plugin:ccb@ccb-local` and requires the user to
+ * - `plugin` uses `--channels plugin:ccb@claude-code-bridge` and requires the user to
  *   have run `claude plugin install` first; no gate to confirm.
  */
 export type ChannelsMode = "dev-flag" | "plugin";
@@ -434,7 +434,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
       // provide). The plugin's manifest references the dynamic endpoint
       // via `${CCB_BRIDGE_ENDPOINT}` / `${CCB_SESSION_ID}` substitution,
       // which we inject into claude's environment before spawn.
-      args.push("--channels", "plugin:ccb@ccb-local");
+      args.push("--channels", "plugin:ccb@claude-code-bridge");
     }
     args.push("--add-dir", cwd);
     if (this.#settingsPath !== undefined) {

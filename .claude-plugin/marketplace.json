@@ -1,5 +1,5 @@
 {
-  "name": "ccb-local",
+  "name": "claude-code-bridge",
   "description": "Local marketplace exposing the ccb plugin from this workspace.",
   "owner": {
     "name": "claude-code-bridge"

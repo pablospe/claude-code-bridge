@@ -388,7 +388,7 @@ test("start in dev-flag mode launches claude with the documented flag set", asyn
   await supervisor.close(FAKE_SESSION_ID);
 });
 
-test("start in plugin mode replaces the dev flag with --channels plugin:ccb@ccb-local", async () => {
+test("start in plugin mode replaces the dev flag with --channels plugin:ccb@claude-code-bridge", async () => {
   const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
     channels: "plugin",
   });
@@ -397,7 +397,7 @@ test("start in plugin mode replaces the dev flag with --channels plugin:ccb@ccb-
   expect(args).not.toContain("--dangerously-load-development-channels");
   expect(args).toContain("--channels");
   const idx = args.indexOf("--channels");
-  expect(args[idx + 1]).toBe("plugin:ccb@ccb-local");
+  expect(args[idx + 1]).toBe("plugin:ccb@claude-code-bridge");
   await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
