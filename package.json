@@ -42,6 +42,8 @@
     "typecheck": "tsc -b",
     "lint": "bunx biome check .",
     "format": "bunx biome format --write .",
+    "build": "bun scripts/build.ts",
+    "build:clean": "rm -rf dist",
     "prepublishOnly": "bun run typecheck && bun test && bun run lint && bun run build"
   },
   "dependencies": {

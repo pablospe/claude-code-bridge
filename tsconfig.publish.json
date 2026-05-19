@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "./dist/types",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@ccb/core": ["./packages/core/src/index.ts"],
+      "@ccb/claude-code": ["./packages/claude-code/src/index.ts"],
+      "@ccb/mcp-channel": ["./packages/mcp-channel/src/index.ts"],
+      "@ccb/process": ["./packages/process/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*"]
+}
