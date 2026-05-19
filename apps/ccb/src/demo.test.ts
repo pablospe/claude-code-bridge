@@ -156,7 +156,7 @@ class PostReplyToolSupervisor implements Supervisor {
     ctx.emit({
       type: "tool.event",
       sessionId,
-      payload: { after: "reply" },
+      payload: { event: "PostToolUse", data: { after: "reply" } },
     });
   }
   async interrupt(): Promise<void> {}

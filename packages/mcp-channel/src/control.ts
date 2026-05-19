@@ -12,6 +12,14 @@ import { validateWireMeta } from "./meta-validation.ts";
 const HelloMessageSchema = z.object({
   type: z.literal("hello"),
   sessionId: z.string(),
+  /**
+   * Optional. `"channel"` (default) is the long-lived channel server's hello;
+   * it registers in `sessionSockets` for `deliver()` routing and fires the
+   * `hello` event. `"hook"` is a transient hook relay's hello; it does NOT
+   * register in `sessionSockets`, does NOT fire `hello`, and the relay socket
+   * may exist concurrently with the channel-role socket for the same session.
+   */
+  role: z.enum(["channel", "hook"]).optional(),
 });
 const HelloAckMessageSchema = z.object({
   type: z.literal("hello_ack"),
@@ -27,6 +35,13 @@ const ToolMessageSchema = z.object({
   name: z.string(),
   args: z.record(z.string(), z.unknown()),
 });
+const HookMessageSchema = z.object({
+  type: z.literal("hook"),
+  sessionId: z.string(),
+  event: z.string(),
+  payload: z.record(z.string(), z.unknown()),
+  sentAt: z.string(),
+});
 const CloseMessageSchema = z.object({
   type: z.literal("close"),
 });
@@ -36,6 +51,7 @@ const ControlMessageSchema = z.discriminatedUnion("type", [
   HelloAckMessageSchema,
   DeliverMessageSchema,
   ToolMessageSchema,
+  HookMessageSchema,
   CloseMessageSchema,
 ]);
 
@@ -72,10 +88,17 @@ export interface ControlServerEvents {
   hello: (sessionId: string) => void;
   tool: (sessionId: string, name: string, args: Record<string, unknown>) => void;
   /**
+   * Fires per hook frame received from a `role:"hook"` relay socket. Frames
+   * arrive in TCP-arrival order; consumers reconstruct Pre/Post pairs by
+   * matching `payload.tool_use_id`.
+   */
+  hook: (sessionId: string, event: string, payload: Record<string, unknown>) => void;
+  /**
    * Per-session peer socket closed. Fires once per session, after a successful
-   * hello, when the remote end of the control connection goes away
-   * (channel-server crash, network drop). Does NOT fire during the cooperative
-   * close path driven by ControlServer.close().
+   * channel-role hello, when the remote end of the control connection goes
+   * away (channel-server crash, network drop). Hook-role sockets do NOT fire
+   * peer-close — they are transient by design. Does NOT fire during the
+   * cooperative close path driven by ControlServer.close().
    */
   "peer-close": (sessionId: string) => void;
 }
@@ -252,6 +275,7 @@ export class ControlServer {
   #handleSocket(socket: Socket): void {
     this.#sockets.add(socket);
     let sessionId: string | undefined;
+    let role: "channel" | "hook" | undefined;
     const helloTimer = setTimeout(() => {
       if (!sessionId) {
         socket.destroy(new Error("hello timeout"));
@@ -265,25 +289,42 @@ export class ControlServer {
           socket.destroy(new Error("duplicate hello on socket"));
           return;
         }
-        if (this.#sessionSockets.has(msg.sessionId)) {
-          socket.destroy(new Error(`duplicate session id: ${msg.sessionId}`));
+        const helloRole = msg.role ?? "channel";
+        if (helloRole === "channel") {
+          if (this.#sessionSockets.has(msg.sessionId)) {
+            socket.destroy(new Error(`duplicate session id: ${msg.sessionId}`));
+            return;
+          }
+          sessionId = msg.sessionId;
+          role = "channel";
+          clearTimeout(helloTimer);
+          this.#sessionSockets.set(sessionId, socket);
+          // Write hello_ack BEFORE emitting the hello event so any synchronous
+          // deliver() call from a listener cannot race ahead of the ack on the
+          // wire.
+          try {
+            await writeLine(socket, { type: "hello_ack" });
+          } catch {
+            // best effort
+          }
+          try {
+            this.#emitter.emit("hello", sessionId);
+          } catch (err) {
+            console.error(`control: hello listener threw: ${String(err)}`);
+          }
           return;
         }
+        // role === "hook" — transient relay connection. Don't register in
+        // sessionSockets (deliver() must not route to a relay), don't fire
+        // the `hello` event (that signal gates deliver-wait), don't fire
+        // peer-close on socket end.
         sessionId = msg.sessionId;
+        role = "hook";
         clearTimeout(helloTimer);
-        this.#sessionSockets.set(sessionId, socket);
-        // Write hello_ack BEFORE emitting the hello event so any synchronous
-        // deliver() call from a listener cannot race ahead of the ack on the
-        // wire.
         try {
           await writeLine(socket, { type: "hello_ack" });
         } catch {
           // best effort
-        }
-        try {
-          this.#emitter.emit("hello", sessionId);
-        } catch (err) {
-          console.error(`control: hello listener threw: ${String(err)}`);
         }
         return;
       }
@@ -299,6 +340,18 @@ export class ControlServer {
         }
         return;
       }
+      if (msg.type === "hook") {
+        if (!sessionId) {
+          socket.destroy(new Error("hook before hello"));
+          return;
+        }
+        try {
+          this.#emitter.emit("hook", sessionId, msg.event, msg.payload);
+        } catch (err) {
+          console.error(`control: hook listener threw: ${String(err)}`);
+        }
+        return;
+      }
       if (msg.type === "close") {
         socket.end();
         return;
@@ -308,12 +361,13 @@ export class ControlServer {
     socket.on("close", () => {
       clearTimeout(helloTimer);
       this.#sockets.delete(socket);
-      if (sessionId && this.#sessionSockets.get(sessionId) === socket) {
+      if (sessionId && role === "channel" && this.#sessionSockets.get(sessionId) === socket) {
         this.#sessionSockets.delete(sessionId);
       }
-      // Only signal peer-close after a successful hello and only when the
-      // close was initiated by the peer (not by our cooperative shutdown).
-      if (sessionId && !this.#closing) {
+      // Only signal peer-close for channel-role sockets (the persistent
+      // channel server). Hook-role sockets are transient relays — their
+      // disconnect is normal and must not be mistaken for a channel crash.
+      if (sessionId && role === "channel" && !this.#closing) {
         try {
           this.#emitter.emit("peer-close", sessionId);
         } catch (err) {

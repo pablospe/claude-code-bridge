@@ -3,6 +3,7 @@ import {
   Bridge,
   type BridgeEvent,
   dispatchBridgeTool,
+  dispatchHookEvent,
   emitCrashEvents,
   type Supervisor,
   type SupervisorContext,
@@ -91,6 +92,12 @@ class ServeSupervisor implements Supervisor {
       server.on("tool", (sid, name, args) => {
         if (sid !== wireId) return;
         this.#dispatchTool(name, args);
+      });
+      server.on("hook", (sid, event, payload) => {
+        if (sid !== wireId) return;
+        const ctx = this.#ctx;
+        if (!ctx) return;
+        dispatchHookEvent(ctx, event, payload);
       });
       server.on("peer-close", (sid) => {
         if (sid !== wireId) return;

@@ -4,6 +4,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   dispatchBridgeTool,
+  dispatchHookEvent,
   emitCrashEvents,
   type Supervisor,
   type SupervisorContext,
@@ -222,6 +223,12 @@ export class ClaudeCodeSupervisor implements Supervisor {
       const current = this.#ctx;
       if (!current) return;
       dispatchBridgeTool(current, name, args);
+    });
+    server.on("hook", (sid, event, payload) => {
+      if (sid !== sessionId) return;
+      const current = this.#ctx;
+      if (!current) return;
+      dispatchHookEvent(current, event, payload);
     });
     // Channel-server peer dropped its TCP control connection (crash, kill -9).
     // Synthesize the crash event pair so the bridge transitions the session

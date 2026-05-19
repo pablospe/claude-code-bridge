@@ -34,7 +34,7 @@ test("BridgeEvent discriminated union is exhaustive over type", () => {
     { type: "agent.reply", sessionId: "s1", content: "ok", final: true },
     { type: "agent.done", sessionId: "s1", reason: "complete" },
     { type: "agent.input_requested", sessionId: "s1", requestId: "r1", prompt: "name?" },
-    { type: "tool.event", sessionId: "s1", payload: { name: "x" } },
+    { type: "tool.event", sessionId: "s1", payload: { event: "PreToolUse", data: { name: "x" } } },
     { type: "session.ended", sessionId: "s1", reason: "done" },
   ];
 

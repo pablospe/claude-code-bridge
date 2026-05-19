@@ -1025,3 +1025,186 @@ test("ControlServer buffers partial JSON lines until newline", async () => {
 
   await server.close();
 });
+
+// ---------------------------------------------------------------------------
+// M3.1 — hook envelope
+// ---------------------------------------------------------------------------
+
+/**
+ * Helper: open a raw TCP connection, perform a `hello` (optional role),
+ * wait for `hello_ack`, and return the socket + a function that reads the
+ * next JSON line. Used by hook-envelope tests that need to control the wire
+ * frames precisely.
+ */
+async function rawHello(
+  host: string,
+  port: number,
+  sessionId: string,
+  role?: "channel" | "hook",
+): Promise<import("node:net").Socket> {
+  const net = await import("node:net");
+  return await new Promise((resolve, reject) => {
+    const sock = net.createConnection({ host, port }, () => {
+      let buf = "";
+      sock.setEncoding("utf8");
+      const onData = (chunk: string): void => {
+        buf += chunk;
+        const idx = buf.indexOf("\n");
+        if (idx >= 0) {
+          const line = buf.slice(0, idx);
+          buf = buf.slice(idx + 1);
+          let msg: unknown;
+          try {
+            msg = JSON.parse(line);
+          } catch (err) {
+            sock.off("data", onData);
+            reject(err);
+            return;
+          }
+          if (
+            typeof msg === "object" &&
+            msg !== null &&
+            (msg as { type?: string }).type === "hello_ack"
+          ) {
+            sock.off("data", onData);
+            resolve(sock);
+          }
+        }
+      };
+      sock.on("data", onData);
+      const helloMsg: Record<string, unknown> = { type: "hello", sessionId };
+      if (role !== undefined) helloMsg.role = role;
+      sock.write(`${JSON.stringify(helloMsg)}\n`);
+    });
+    sock.once("error", reject);
+  });
+}
+
+test("ControlServer emits 'hook' event when a hook frame arrives after a hook-role hello", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  type HookCall = { sessionId: string; event: string; payload: Record<string, unknown> };
+  const calls: HookCall[] = [];
+  server.on("hook", (sessionId, event, payload) => {
+    calls.push({ sessionId, event, payload });
+  });
+
+  const sock = await rawHello(info.host, info.port, "sess-hook", "hook");
+  sock.write(
+    `${JSON.stringify({
+      type: "hook",
+      sessionId: "sess-hook",
+      event: "PreToolUse",
+      payload: { tool_name: "Bash", tool_input: { command: "ls" } },
+      sentAt: "2026-05-19T20:00:00.000Z",
+    })}\n`,
+  );
+
+  await until(() => calls.length > 0);
+  expect(calls).toEqual([
+    {
+      sessionId: "sess-hook",
+      event: "PreToolUse",
+      payload: { tool_name: "Bash", tool_input: { command: "ls" } },
+    },
+  ]);
+
+  sock.end();
+  await server.close();
+});
+
+test("ControlServer accepts multiple concurrent hook-role hellos for the same session", async () => {
+  // Hook relay opens a fresh connection per fire; the channel server's persistent
+  // socket and N transient hook sockets must coexist for the same sessionId.
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+  const helloIds: string[] = [];
+  server.on("hello", (sid) => helloIds.push(sid));
+
+  // 1) Channel-role hello (default).
+  const channelSock = await rawHello(info.host, info.port, "sess-multi");
+  await until(() => helloIds.length === 1);
+
+  // 2) Two hook-role hellos for the same session must not be rejected as duplicates.
+  const hookA = await rawHello(info.host, info.port, "sess-multi", "hook");
+  const hookB = await rawHello(info.host, info.port, "sess-multi", "hook");
+
+  // Hook hellos must NOT fire the "hello" event (that signal is reserved for
+  // the channel-role hello — it gates deliver()).
+  await new Promise<void>((r) => setTimeout(r, 30));
+  expect(helloIds).toEqual(["sess-multi"]);
+
+  channelSock.end();
+  hookA.end();
+  hookB.end();
+  await server.close();
+});
+
+test("ControlServer does NOT fire peer-close when a hook-role socket closes", async () => {
+  // peer-close synthesizes a crash event — must not trigger on transient hook
+  // relays disconnecting after a single fire.
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+  const peerCloses: string[] = [];
+  server.on("peer-close", (sid) => peerCloses.push(sid));
+
+  const sock = await rawHello(info.host, info.port, "sess-pc", "hook");
+  // Close cleanly from the client side (FIN).
+  sock.end();
+  await new Promise<void>((r) => setTimeout(r, 50));
+  expect(peerCloses).toEqual([]);
+
+  await server.close();
+});
+
+test("ControlServer rejects a 'hook' frame received before any hello", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+  const calls: unknown[] = [];
+  server.on("hook", (sid, ev, p) => calls.push({ sid, ev, p }));
+
+  const net = await import("node:net");
+  await new Promise<void>((resolve, reject) => {
+    const sock = net.createConnection({ host: info.host, port: info.port }, () => {
+      sock.write(
+        `${JSON.stringify({
+          type: "hook",
+          sessionId: "sess-x",
+          event: "PreToolUse",
+          payload: {},
+          sentAt: "2026-05-19T20:00:00.000Z",
+        })}\n`,
+      );
+    });
+    sock.on("close", () => resolve());
+    sock.on("error", () => resolve());
+    setTimeout(reject, 1000, new Error("socket should have been closed"));
+  });
+
+  expect(calls).toEqual([]);
+  await server.close();
+});
+
+test("ControlServer ignores malformed 'hook' frames (missing required fields)", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+  const calls: unknown[] = [];
+  server.on("hook", (sid, ev, p) => calls.push({ sid, ev, p }));
+
+  const sock = await rawHello(info.host, info.port, "sess-bad", "hook");
+  // Missing sentAt → schema rejects → ignored.
+  sock.write(
+    `${JSON.stringify({
+      type: "hook",
+      sessionId: "sess-bad",
+      event: "PreToolUse",
+      payload: {},
+    })}\n`,
+  );
+  await new Promise<void>((r) => setTimeout(r, 50));
+  expect(calls).toEqual([]);
+
+  sock.end();
+  await server.close();
+});

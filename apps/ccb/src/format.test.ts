@@ -42,7 +42,11 @@ const samples: ReadonlyArray<{ name: string; event: BridgeEvent }> = [
   },
   {
     name: "tool.event",
-    event: { type: "tool.event", sessionId: "s1", payload: { foo: 1 } },
+    event: {
+      type: "tool.event",
+      sessionId: "s1",
+      payload: { event: "PreToolUse", data: { foo: 1 } },
+    },
   },
   {
     name: "session.ended no reason",
@@ -111,9 +115,13 @@ test("formatPretty produces the expected human-readable shapes", () => {
       prompt: "name?",
     }),
   ).toBe('[agent.input_requested] r1 "name?"');
-  expect(formatPretty({ type: "tool.event", sessionId: "s1", payload: { foo: 1 } })).toBe(
-    '[tool.event] {"foo":1}',
-  );
+  expect(
+    formatPretty({
+      type: "tool.event",
+      sessionId: "s1",
+      payload: { event: "PreToolUse", data: { foo: 1 } },
+    }),
+  ).toBe('[tool.event] {"event":"PreToolUse","data":{"foo":1}}');
   expect(formatPretty({ type: "session.ended", sessionId: "s1" })).toBe("[session.ended]");
   expect(formatPretty({ type: "session.ended", sessionId: "s1", reason: "closed" })).toBe(
     "[session.ended] reason=closed",

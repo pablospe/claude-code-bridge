@@ -13,7 +13,13 @@ export {
 } from "./crash-events.ts";
 export type { BridgeEvent } from "./events.ts";
 export { JsonlEventStore } from "./store.ts";
-export { dispatchBridgeTool, type Supervisor, type SupervisorContext } from "./supervisor.ts";
+export {
+  dispatchBridgeTool,
+  dispatchHookEvent,
+  HOOK_MAX_FIELD_BYTES,
+  type Supervisor,
+  type SupervisorContext,
+} from "./supervisor.ts";
 export type {
   ClaudeCodeBridge,
   EventsOptions,
