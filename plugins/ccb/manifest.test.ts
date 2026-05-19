@@ -92,9 +92,7 @@ describe("ccb plugin manifest", () => {
     const manifest = await readManifest();
     expect(manifest.hooks).toBeDefined();
     const eventNames = Object.keys(manifest.hooks ?? {});
-    expect(eventNames).toEqual(
-      expect.arrayContaining(["PreToolUse", "PostToolUse", "Stop"]),
-    );
+    expect(eventNames).toEqual(expect.arrayContaining(["PreToolUse", "PostToolUse", "Stop"]));
   });
 
   test("each hook command invokes `ccb-hook-relay <event>` by bare bin name", async () => {
@@ -109,6 +107,7 @@ describe("ccb plugin manifest", () => {
     }
   });
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the test name documents the literal claude placeholder we are forbidding.
   test("manifest text contains zero `${CLAUDE_PROJECT_DIR}` references", async () => {
     // The dev-flag channels mode uses CLAUDE_PROJECT_DIR; the published
     // plugin manifest does not. This guard fails loudly if the workspace
