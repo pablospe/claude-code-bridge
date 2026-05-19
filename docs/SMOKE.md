@@ -219,7 +219,11 @@ A successful run produces the canonical reply chain in the bridge log:
 
 `ClaudeCodeSupervisor` reads claude's PTY via `node-pty`'s `onData` callback. Under Bun on Linux at the time of writing, NAPI gaps prevent that callback from firing reliably — the supervisor cannot see what `claude` prints, so debugging managed-launch failures is blind. The harness sidesteps Bun by spawning `claude` from a Node process where `node-pty`'s `onData` works, then logs every byte. The bridge itself (the `ccb serve` half above) still runs under Bun and exercises the production code path.
 
-The harness is diagnostic-only and does NOT replace `ccb demo --supervisor=claude` as the supported single-command path. It is for debugging.
+### When it is more than diagnostic
+
+The harness pairs `ServeSupervisor` (under Bun) with an external `claude` launcher (under Node) — the same pattern any process orchestrator would use. It is the **current best Linux+Bun real-claude path** until Bun's NAPI gap closes. See `docs/ARCHITECTURE.md` § "Choosing a supervisor" for the broader story; the short version is that `ClaudeCodeSupervisor` is a convenience layer and `ServeSupervisor` + external launcher is the load-bearing pattern. The harness happens to be a perfectly good external launcher: 200 lines of clear Node, observable PTY output, the same auto-confirm logic the production supervisor uses.
+
+If you want to ship this pattern beyond local development, the harness only needs a CLI rename, slightly nicer docs, and a `bin` entry — no new code.
 
 ### CLI options
 

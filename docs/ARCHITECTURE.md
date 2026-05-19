@@ -159,6 +159,55 @@ process. The four packages that make up this surface:
   `ClaudeCodeSupervisor` managed-launch implementation.
 - `apps/ccb` (`@ccb/cli`) — developer CLI (`demo`, `mcp-config`, `serve`).
 
+## Choosing a supervisor
+
+The `Supervisor` interface has three production-relevant implementations. They share the
+same wire protocol (channels in, MCP tools out, JSONL store) and the same `BridgeEvent`
+contract — they differ only in who is responsible for spawning `claude`.
+
+| supervisor | who spawns `claude` | use it when |
+|---|---|---|
+| `MockSupervisor` | nobody — in-process echo | unit tests, demos, anything that does not need a real model |
+| `ServeSupervisor` | someone else (a human, a script, an orchestrator) | the bridge runs as a service; an external process launches `claude` with the bridge's `--mcp-config` and the channel server dials back |
+| `ClaudeCodeSupervisor` | the bridge itself, via `node-pty` | one-command convenience: `ccb demo --supervisor=claude` |
+
+`ClaudeCodeSupervisor` is a **convenience layer**, not a requirement. It bundles
+"spawn `claude` + run the bridge" into a single command. A consumer that already has its
+own process orchestration (systemd, supervisord, a tmux session, a custom launcher,
+the `scripts/diagnostics/claude-pty-trace.cjs` harness) does not need it.
+
+### Today's working pattern on Bun-on-Linux
+
+On Bun-on-Linux the managed-launch path currently hits a bug downstream of the bridge
+itself — `claude`, spawned under Bun's PTY, doesn't reliably initialize its MCP child.
+The fix is in upstream Bun (tracked at oven-sh/bun#25822 + adjacent gaps). Until that
+lands, the supported real-`claude` pattern on Bun-on-Linux is **`ServeSupervisor` plus an
+external launcher**:
+
+- **Bridge under Bun**:
+  `bun apps/ccb/src/cli.ts serve --endpoint 127.0.0.1:18486 --session-id <uuid> --format json`
+- **Claude spawned externally**:
+  - The Node diagnostic harness (`scripts/diagnostics/claude-pty-trace.cjs`) — the current
+    best Linux+Bun launcher; documented in [`SMOKE.md`](./SMOKE.md).
+  - A human in another terminal (the two-terminal manual procedure in
+    [`SMOKE.md`](./SMOKE.md)).
+  - Any process orchestrator that knows how to invoke
+    `claude --dangerously-load-development-channels server:ccb --mcp-config <file> ...`
+    with the right env vars.
+
+This pattern is verified end-to-end: the bridge produces
+`agent.reply{final:true, content:"11 squared is 121."}` in its JSONL when paired with
+the harness. The protocol and library are sound; only the convenience layer is gated.
+
+### Implication for consumers
+
+A third-party consumer (a UI, an orchestrator, an SDK user) writes against the `Bridge`
+library + `ServeSupervisor`. They do not need `ClaudeCodeSupervisor` at all — they just
+need to know how to launch `claude` with the bridge's MCP config, which the diagnostic
+harness demonstrates in about 200 lines of clear Node. Once Bun's NAPI gap closes,
+`ClaudeCodeSupervisor` becomes the one-command convenience again and any consumer that
+wants it can swap in `claudeCodeSupervisorFactory()` without changing protocol or events.
+
 ## Channel direction notes
 
 "Channels" describes the inbound MCP notification mechanism. The general-content direction
