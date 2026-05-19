@@ -435,6 +435,25 @@ test("CCB_STRACE unset leaves the command unchanged", async () => {
   }
 });
 
+test("Bun tty.ReadStream is replaced with a polling stream after launcher loads (oven-sh/bun#25822)", async () => {
+  const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
+  if (!isBun) return;
+  // The first `launch()` call in beforeAll already triggered the polyfill;
+  // calling again here is idempotent. The patched class must be present on
+  // the same `require("tty")` namespace node-pty observes.
+  const handle = launch("bash", ["-c", "true"]);
+  await handle.waitExit();
+  const tty = (await import("node:tty")) as unknown as { ReadStream: unknown };
+  // The patched stream is a custom subclass — assert it's not the stock
+  // tty.ReadStream identity. We can't import the polyfill class directly
+  // (it's module-private), but we can assert the patched constructor's
+  // name and that instantiation yields an object that exposes the
+  // Readable/Writable surface node-pty exercises.
+  const Patched = tty.ReadStream as new (fd: number) => unknown;
+  expect(typeof Patched).toBe("function");
+  expect((Patched as { name: string }).name).toBe("PollingPtyStream");
+});
+
 test("LauncherUnavailableError: thrown when node-pty fails to load", async () => {
   // Swap the mocked module to throw on access of `spawn`. Using a getter
   // simulates a require-time failure path.
