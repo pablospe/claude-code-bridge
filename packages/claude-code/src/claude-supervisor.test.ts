@@ -157,7 +157,9 @@ const FAKE_SESSION_ID = "00000000-0000-0000-0000-0000000000aa";
 
 async function startWithFakeLauncher(opts: {
   channels?: "dev-flag" | "plugin";
-  autoConfirmTimeoutMs?: number;
+  autoConfirmInitialDelayMs?: number;
+  autoConfirmRetryIntervalMs?: number;
+  autoConfirmMaxAttempts?: number;
   startTimeoutMs?: number;
 }): Promise<{
   supervisor: ClaudeCodeSupervisor;
@@ -176,7 +178,9 @@ async function startWithFakeLauncher(opts: {
   const factory = captureLauncherFactory();
   const supervisor = new ClaudeCodeSupervisor({
     channels: opts.channels ?? "dev-flag",
-    autoConfirmTimeoutMs: opts.autoConfirmTimeoutMs,
+    autoConfirmInitialDelayMs: opts.autoConfirmInitialDelayMs,
+    autoConfirmRetryIntervalMs: opts.autoConfirmRetryIntervalMs,
+    autoConfirmMaxAttempts: opts.autoConfirmMaxAttempts,
     startTimeoutMs: opts.startTimeoutMs,
     launcherFactory: factory,
   });
@@ -464,21 +468,67 @@ test("auto-confirm: plugin mode never writes \\n even if the hint appears", asyn
   await supervisor.close(FAKE_SESSION_ID);
 });
 
-test("auto-confirm: writes \\n blindly after the timeout when the hint never appears", async () => {
+test("auto-confirm: writes \\r repeatedly at the retry interval when the hint never appears", async () => {
   // The fallback covers runtimes where PTY onData callbacks do not fire
-  // (e.g. Bun's NAPI gap for node-pty at the time of writing). It also
-  // tolerates upstream warning-text drift. The risk of misfire is bounded:
-  // if claude already booted past the prompt, an extra \n submits an empty
-  // message — at most one stray turn, no crash.
+  // (e.g. Bun's NAPI gap for node-pty at the time of writing) AND the
+  // slow-boot case (onData works but claude isn't ready to consume the first
+  // \r). A single blind shot is racy; the supervisor retries at a bounded
+  // interval. The risk of misfire is bounded: each stray \r submits an empty
+  // turn — no data loss, no crash.
   const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
     channels: "dev-flag",
-    autoConfirmTimeoutMs: 30,
+    autoConfirmInitialDelayMs: 20,
+    autoConfirmRetryIntervalMs: 20,
+    autoConfirmMaxAttempts: 4,
   });
   await startResult;
   // Emit some output that doesn't match the hint.
   launcher.emitData("some unrelated banner\r\n");
+  // Wait long enough for ~3 attempts (initial + 2 retries) to fire.
   await new Promise((r) => setTimeout(r, 80));
-  expect(launcher.writes).toContain("\r");
+  const crWrites = launcher.writes.filter((w) => w === "\r");
+  expect(crWrites.length).toBeGreaterThanOrEqual(3);
+  await helloClient.close();
+  await supervisor.close(FAKE_SESSION_ID);
+});
+
+test("auto-confirm: writes \\r up to maxAttempts times then stops", async () => {
+  // The retry loop is bounded by autoConfirmMaxAttempts so a pathological
+  // boot does not produce an unbounded stream of stray empty turns. The outer
+  // bound is Bridge.startTimeoutMs; this is the inner bound.
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
+    channels: "dev-flag",
+    autoConfirmInitialDelayMs: 10,
+    autoConfirmRetryIntervalMs: 10,
+    autoConfirmMaxAttempts: 3,
+  });
+  await startResult;
+  launcher.emitData("unrelated\r\n");
+  // Wait well past what would be 6 attempts at 10ms each (~60ms).
+  await new Promise((r) => setTimeout(r, 150));
+  const crWrites = launcher.writes.filter((w) => w === "\r");
+  expect(crWrites.length).toBe(3);
+  await helloClient.close();
+  await supervisor.close(FAKE_SESSION_ID);
+});
+
+test("auto-confirm: fast-path hint detection cancels the retry interval", async () => {
+  // When the onData hint fires, the scanner writes a single \r and cancels
+  // the retry interval. Otherwise the boot would receive both a hint-driven
+  // \r AND a fallback \r at the next retry boundary.
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
+    channels: "dev-flag",
+    autoConfirmInitialDelayMs: 50,
+    autoConfirmRetryIntervalMs: 20,
+    autoConfirmMaxAttempts: 6,
+  });
+  await startResult;
+  // Emit the hint immediately, before the first blind \r would fire.
+  launcher.emitData("Enter to confirm · Esc to cancel\r\n");
+  // Wait long enough that several retries would have fired if not cancelled.
+  await new Promise((r) => setTimeout(r, 150));
+  const crWrites = launcher.writes.filter((w) => w === "\r");
+  expect(crWrites.length).toBe(1);
   await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });

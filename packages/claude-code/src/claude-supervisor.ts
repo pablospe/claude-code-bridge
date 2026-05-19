@@ -47,11 +47,26 @@ export interface ClaudeCodeSupervisorOptions {
    */
   readonly channels?: ChannelsMode;
   /**
-   * Upper bound on the auto-confirm scan. If the dev-channels hint substring
-   * does not appear in the launcher's output within this window, the
-   * supervisor stays its hand — it does NOT blind-fire `\n`. Default 5000ms.
+   * Delay before the first blind `\r` write if the dev-channels hint never
+   * surfaces via `onData`. Default 3000ms — earlier than the hint reliably
+   * appears under cold-boot, but late enough to give a fast boot a chance to
+   * be detected via the fast path first.
    */
-  readonly autoConfirmTimeoutMs?: number;
+  readonly autoConfirmInitialDelayMs?: number;
+  /**
+   * Interval between subsequent blind `\r` writes after the initial delay,
+   * up to `autoConfirmMaxAttempts` total writes. Default 3000ms — covers a
+   * boot that consumes the prompt several seconds after the hint would have
+   * been printable, which strace-style scheduling perturbation reliably
+   * reproduces.
+   */
+  readonly autoConfirmRetryIntervalMs?: number;
+  /**
+   * Hard cap on the number of blind `\r` writes the scanner emits. Default 6
+   * — covers a ~20s boot window comfortably while keeping the worst-case
+   * stray-empty-turn count bounded if claude already booted past the prompt.
+   */
+  readonly autoConfirmMaxAttempts?: number;
   /**
    * Reserved for symmetry with `Bridge.startTimeoutMs`. Currently unused at
    * this layer because the supervisor itself does not block on a
@@ -73,7 +88,23 @@ export interface ClaudeCodeSupervisorOptions {
  * to silently no-op.)
  */
 const DEV_CHANNELS_CONFIRM_HINT = "Enter to confirm";
-const DEFAULT_AUTO_CONFIRM_TIMEOUT_MS = 5_000;
+/**
+ * Time before the first blind `\r` is written when the hint never surfaces
+ * via onData. 3s is earlier than the original 5s single-shot because we now
+ * retry — a slightly early miss is recovered by the next attempt.
+ */
+const DEFAULT_AUTO_CONFIRM_INITIAL_DELAY_MS = 3_000;
+/**
+ * Spacing between subsequent blind `\r` writes. 3s matches the initial delay
+ * so the schedule is simple to reason about: \r at 3, 6, 9, ... seconds.
+ */
+const DEFAULT_AUTO_CONFIRM_RETRY_INTERVAL_MS = 3_000;
+/**
+ * Maximum number of blind `\r` writes the scanner will emit. 6 covers a
+ * ~20s boot window (3 + 5*3 = 18s of the 30s Bridge.startTimeoutMs default)
+ * while keeping stray-empty-turn fallout bounded if claude already booted.
+ */
+const DEFAULT_AUTO_CONFIRM_MAX_ATTEMPTS = 6;
 /**
  * Sliding-window cap for the auto-confirm scan buffer. A noisy boot (locale
  * init, debug spam, slow tty redraw) could otherwise grow the buffer
@@ -107,7 +138,9 @@ function resolveChannelServerBinPath(): string {
  */
 export class ClaudeCodeSupervisor implements Supervisor {
   readonly #channels: ChannelsMode;
-  readonly #autoConfirmTimeoutMs: number;
+  readonly #autoConfirmInitialDelayMs: number;
+  readonly #autoConfirmRetryIntervalMs: number;
+  readonly #autoConfirmMaxAttempts: number;
   readonly #launcherFactory: LauncherFactory;
   readonly #writeFile: WriteFileFn;
 
@@ -120,7 +153,12 @@ export class ClaudeCodeSupervisor implements Supervisor {
 
   constructor(options: ClaudeCodeSupervisorOptions = {}) {
     this.#channels = options.channels ?? "dev-flag";
-    this.#autoConfirmTimeoutMs = options.autoConfirmTimeoutMs ?? DEFAULT_AUTO_CONFIRM_TIMEOUT_MS;
+    this.#autoConfirmInitialDelayMs =
+      options.autoConfirmInitialDelayMs ?? DEFAULT_AUTO_CONFIRM_INITIAL_DELAY_MS;
+    this.#autoConfirmRetryIntervalMs =
+      options.autoConfirmRetryIntervalMs ?? DEFAULT_AUTO_CONFIRM_RETRY_INTERVAL_MS;
+    this.#autoConfirmMaxAttempts =
+      options.autoConfirmMaxAttempts ?? DEFAULT_AUTO_CONFIRM_MAX_ATTEMPTS;
     this.#launcherFactory =
       options.launcherFactory ?? ((cmd, args, opts) => defaultLaunch(cmd, [...args], opts));
     this.#writeFile = options.writeFile ?? writeFile;
@@ -315,30 +353,32 @@ export class ClaudeCodeSupervisor implements Supervisor {
   }
 
   /**
-   * Buffer PTY output and write `\n` once the dev-channels confirm hint
-   * appears. Bounded by `autoConfirmTimeoutMs`.
+   * Buffer PTY output and write `\r` once the dev-channels confirm hint
+   * appears. Bounded by `autoConfirmMaxAttempts` blind writes.
    *
    * Two write paths so a runtime that does not surface PTY `onData` callbacks
-   * does not deadlock the boot:
+   * does not deadlock the boot — and so a slow boot under reliable `onData`
+   * does not lose its single shot:
    *
    * 1. Fast path: as soon as the hint substring appears in the buffer, write
-   *    `\n` and stop scanning. This is the common case under Node.
-   * 2. Fallback: at `autoConfirmTimeoutMs`, if the hint never appeared, write
-   *    `\n` blindly anyway. The fallback covers runtimes where `onData` does
-   *    not fire reliably for PTY children (Bun's NAPI compat layer at the
-   *    time of writing); it also tolerates upstream warning-text drift. Risk
-   *    is bounded: if claude already booted past the prompt, an extra `\n`
-   *    submits an empty message which produces at most one stray turn — no
-   *    data loss, no crash.
+   *    `\r` and stop scanning. This is the common case under Node.
+   * 2. Fallback: after `autoConfirmInitialDelayMs`, write `\r` blindly, then
+   *    keep writing every `autoConfirmRetryIntervalMs` up to
+   *    `autoConfirmMaxAttempts` total writes. The fallback covers runtimes
+   *    where `onData` does not fire reliably for PTY children (Bun's NAPI
+   *    compat layer at the time of writing) AND the slow-boot case where
+   *    onData fires but claude isn't ready to consume the first \r yet. Risk
+   *    is bounded: if claude already booted past the prompt, each extra `\r`
+   *    submits an empty turn — at most `autoConfirmMaxAttempts` stray turns,
+   *    no data loss, no crash.
    */
   #installAutoConfirmScanner(): void {
     const launcher = this.#launcher;
     if (!launcher) return;
-    let confirmed = false;
+    let stopped = false;
+    let attempts = 0;
     let buffer = "";
-    const writeConfirm = (): void => {
-      if (confirmed) return;
-      confirmed = true;
+    const writeCr = (): void => {
       try {
         // \r is the on-the-wire Enter keypress for a TTY. claude's TUI reads
         // raw keystrokes (no line discipline), so \n is interpreted literally
@@ -349,10 +389,34 @@ export class ClaudeCodeSupervisor implements Supervisor {
       } catch {
         /* swallow: PTY may have raced us to closed. */
       }
+    };
+    const cleanup = (): void => {
+      if (stopped) return;
+      stopped = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      unsubscribe();
+    };
+    const fastPath = (): void => {
+      if (stopped) return;
+      writeCr();
       cleanup();
     };
+    const blindAttempt = (): void => {
+      if (stopped) return;
+      attempts += 1;
+      writeCr();
+      if (attempts >= this.#autoConfirmMaxAttempts) {
+        cleanup();
+        return;
+      }
+      timer = setTimeout(blindAttempt, this.#autoConfirmRetryIntervalMs);
+      (timer as { unref?: () => void }).unref?.();
+    };
     const unsubscribe = launcher.onData((chunk) => {
-      if (confirmed) return;
+      if (stopped) return;
       buffer += chunk;
       // Sliding window: anything older than AUTO_CONFIRM_BUFFER_MAX bytes
       // cannot still contain the hint substring (the hint is much smaller
@@ -362,18 +426,14 @@ export class ClaudeCodeSupervisor implements Supervisor {
         buffer = buffer.slice(buffer.length - AUTO_CONFIRM_BUFFER_MAX);
       }
       if (buffer.includes(DEV_CHANNELS_CONFIRM_HINT)) {
-        writeConfirm();
+        fastPath();
       }
     });
-    const timer = setTimeout(() => {
-      // Window elapsed; write blindly. See doc comment above for rationale.
-      writeConfirm();
-    }, this.#autoConfirmTimeoutMs);
+    let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(
+      blindAttempt,
+      this.#autoConfirmInitialDelayMs,
+    );
     (timer as { unref?: () => void }).unref?.();
-    const cleanup = (): void => {
-      clearTimeout(timer);
-      unsubscribe();
-    };
     this.#autoConfirmCleanup = cleanup;
   }
 
