@@ -57,6 +57,15 @@ export interface ControlServerEndpoint {
 export interface DeliverWireOptions {
   readonly messageId?: string;
   readonly meta?: Record<string, string>;
+  /**
+   * When `deliver()` is called for a session whose control socket has not yet
+   * arrived (channel server is still booting, hello not seen), block on the
+   * `hello` event for this session up to `deliverWaitMs` before failing. Zero
+   * disables the wait. On timeout, the same `"no connected client for session
+   * <id>"` error is thrown that today's deliver throws, so callers don't need
+   * to handle a new error type.
+   */
+  readonly deliverWaitMs?: number;
 }
 
 export interface ControlServerEvents {
@@ -75,6 +84,13 @@ const DEFAULT_HELLO_TIMEOUT_MS = 5_000;
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const SHUTDOWN_TIMEOUT_MS = 1_000;
 const DEFAULT_WRITE_TIMEOUT_MS = 10_000;
+/**
+ * How long `deliver()` waits for the channel server's `hello` to arrive when
+ * the per-session socket is not yet registered. Matches `Bridge.startTimeoutMs`
+ * (the default upper bound on session startup), so a deliver fired immediately
+ * after `startSession` resolves has up to a full startup window to land.
+ */
+const DEFAULT_DELIVER_WAIT_MS = 30_000;
 
 /**
  * Per-call lookup so tests can flip the env between calls. Falls back to the
@@ -95,6 +111,14 @@ export class ControlServer {
   readonly #emitter = new EventEmitter();
   readonly #sessionSockets = new Map<string, Socket>();
   readonly #sockets = new Set<Socket>();
+  /**
+   * Reject callbacks for in-flight `#waitForSessionSocket` callers. Indexed by
+   * an opaque counter so cleanup is O(1) without scanning. Used by `close()`
+   * to fail pending waiters fast instead of letting the shutdown hang for the
+   * caller's `deliverWaitMs`.
+   */
+  readonly #pendingWaiters = new Map<number, (err: Error) => void>();
+  #nextWaiterId = 0;
   #server: NetServer | undefined;
   #helloTimeoutMs: number = DEFAULT_HELLO_TIMEOUT_MS;
   #closing = false;
@@ -134,9 +158,10 @@ export class ControlServer {
   }
 
   async deliver(sessionId: string, content: string, opts: DeliverWireOptions = {}): Promise<void> {
-    const socket = this.#sessionSockets.get(sessionId);
+    let socket = this.#sessionSockets.get(sessionId);
     if (!socket) {
-      throw new Error(`no connected client for session ${sessionId}`);
+      const waitMs = opts.deliverWaitMs ?? DEFAULT_DELIVER_WAIT_MS;
+      socket = await this.#waitForSessionSocket(sessionId, waitMs);
     }
     const meta = opts.meta !== undefined ? validateWireMeta(opts.meta) : undefined;
     const msg: DeliverMessage = {
@@ -148,8 +173,61 @@ export class ControlServer {
     await writeLineNormal(socket, msg, writeTimeoutMs());
   }
 
+  /**
+   * Block until the per-session socket is registered (via a matching `hello`)
+   * or `timeoutMs` elapses. On timeout, throws the same error message that
+   * deliver throws today when the socket is missing, so callers do not have to
+   * learn a new error type. If `close()` runs while a wait is pending, the
+   * waiter rejects cleanly instead of hanging.
+   */
+  #waitForSessionSocket(sessionId: string, timeoutMs: number): Promise<Socket> {
+    return new Promise<Socket>((resolve, reject) => {
+      if (this.#closing) {
+        reject(new Error(`no connected client for session ${sessionId}`));
+        return;
+      }
+      const waiterId = this.#nextWaiterId++;
+      let settled = false;
+      const cleanup = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.#emitter.off("hello", onHello);
+        this.#pendingWaiters.delete(waiterId);
+      };
+      const onHello = (sid: string): void => {
+        if (sid !== sessionId) return;
+        const sock = this.#sessionSockets.get(sessionId);
+        if (!sock) return;
+        cleanup();
+        resolve(sock);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`no connected client for session ${sessionId}`));
+      }, timeoutMs);
+      timer.unref?.();
+      this.#pendingWaiters.set(waiterId, (err) => {
+        cleanup();
+        reject(err);
+      });
+      this.#emitter.on("hello", onHello);
+    });
+  }
+
   async close(): Promise<void> {
     this.#closing = true;
+    // Fail any in-flight deliver waiters before tearing down sockets so they
+    // don't hang the caller's `deliverWaitMs`.
+    const waiters = [...this.#pendingWaiters.values()];
+    this.#pendingWaiters.clear();
+    for (const rejectWaiter of waiters) {
+      try {
+        rejectWaiter(new Error("control server closing"));
+      } catch {
+        // best effort
+      }
+    }
     const sockets = [...this.#sockets];
     await Promise.allSettled(
       sockets.map(async (socket) => {

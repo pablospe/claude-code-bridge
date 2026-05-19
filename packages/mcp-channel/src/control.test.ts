@@ -869,6 +869,121 @@ test("ControlServer.deliver rejects on write timeout against a paused client", a
   await server.close();
 }, 20_000);
 
+test("ControlServer.deliver fast-path is synchronous when socket is already registered", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  const got: string[] = [];
+  const client = new ControlClient({
+    endpoint: info.endpoint,
+    sessionId: "fast-path",
+    onDeliver: (content) => {
+      got.push(content);
+    },
+  });
+  await client.connect();
+
+  // Once connected the socket is registered; deliver must not introduce any
+  // async wait. Fire several deliveries in quick succession with a very short
+  // deliverWaitMs to prove the hello-gate is skipped entirely.
+  const start = Date.now();
+  await server.deliver("fast-path", "a", { deliverWaitMs: 1 });
+  await server.deliver("fast-path", "b", { deliverWaitMs: 1 });
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(50);
+
+  await until(() => got.length >= 2);
+  expect(got).toEqual(["a", "b"]);
+
+  await client.close();
+  await server.close();
+});
+
+test("ControlServer.deliver waits for hello arrival before writing the frame", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  const got: string[] = [];
+  const client = new ControlClient({
+    endpoint: info.endpoint,
+    sessionId: "late-hello",
+    onDeliver: (content) => {
+      got.push(content);
+    },
+  });
+
+  // Start deliver before any client connects. With the hello-gate the call
+  // must hang until the client's hello arrives, then resolve.
+  const deliverPromise = server.deliver("late-hello", "first", { deliverWaitMs: 5_000 });
+
+  // Give the deliver a moment to start waiting, then connect.
+  await new Promise<void>((r) => setTimeout(r, 50));
+  await client.connect();
+
+  await deliverPromise;
+  await until(() => got.length > 0);
+  expect(got).toEqual(["first"]);
+
+  await client.close();
+  await server.close();
+});
+
+test("ControlServer.deliver rejects with 'no connected client' when hello never arrives", async () => {
+  const server = new ControlServer();
+  await server.listen({ host: "127.0.0.1", port: 0 });
+
+  const start = Date.now();
+  await expect(server.deliver("missing", "x", { deliverWaitMs: 80 })).rejects.toThrow(
+    /no connected client for session missing/,
+  );
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeGreaterThanOrEqual(50);
+  expect(elapsed).toBeLessThan(1_000);
+
+  await server.close();
+});
+
+test("ControlServer.deliver waiting for sessionId A is not satisfied by hello for sessionId B", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+  // Start deliver waiting on session "A" with a short timeout.
+  const deliverPromise = server.deliver("A", "x", { deliverWaitMs: 120 });
+
+  // Connect a client with a DIFFERENT sessionId — must not unblock the wait.
+  const clientB = new ControlClient({
+    endpoint: info.endpoint,
+    sessionId: "B",
+    onDeliver: () => {},
+  });
+  await clientB.connect();
+
+  await expect(deliverPromise).rejects.toThrow(/no connected client for session A/);
+
+  await clientB.close();
+  await server.close();
+});
+
+test("ControlServer.close unblocks pending deliver waiters without hanging", async () => {
+  const server = new ControlServer();
+  await server.listen({ host: "127.0.0.1", port: 0 });
+
+  // Start a deliver with a long wait so we know the close — not the timeout —
+  // unblocks it.
+  const deliverPromise = server.deliver("never", "x", { deliverWaitMs: 60_000 });
+  // Make sure the wait has started.
+  await new Promise<void>((r) => setTimeout(r, 20));
+
+  const start = Date.now();
+  await server.close();
+  const closeElapsed = Date.now() - start;
+  // server.close must not block on the pending deliver; should be fast.
+  expect(closeElapsed).toBeLessThan(1_500);
+
+  // The pending deliver must settle (reject) — not hang.
+  await expect(deliverPromise).rejects.toThrow();
+});
+
 test("ControlServer buffers partial JSON lines until newline", async () => {
   const server = new ControlServer();
   const info = await server.listen({ host: "127.0.0.1", port: 0 });
