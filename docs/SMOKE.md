@@ -170,6 +170,73 @@ CCB_RUN_REAL_CLAUDE=1 bun scripts/smoke-scripted.ts
 
 Do not depend on this in CI without a PTY surrogate. The intent is to give a single-command path for local experimentation; the supported single-command path for real `claude` is managed launch (`bun apps/ccb/src/cli.ts demo --supervisor=claude "..."`).
 
+## Diagnostic harness (when managed launch fails opaquely)
+
+`scripts/diagnostics/claude-pty-trace.cjs` is a pure-Node script that mimics what `ClaudeCodeSupervisor` does to spawn `claude`, tees every PTY byte to a log file, and auto-confirms the dev-channels warning the same way the supervisor does. Its purpose is to make `claude`'s PTY output observable on runtimes where the production supervisor cannot — most notably Bun, whose NAPI compat layer does not surface `node-pty`'s `onData` callbacks. With the harness you can see what `claude` actually prints during boot, between the dev-channels confirm and the channel-server spawn, and after a channel notification arrives.
+
+Use it when managed launch (`ccb demo --supervisor=claude`) hangs at `supervisor.start timed out` or produces `agent.done reason=channel-disconnected` instead of a real reply, and you want to know what `claude` was doing inside the PTY.
+
+### Setup
+
+```bash
+# 1. Pick a fixed endpoint + session id so all three pieces agree:
+SESSION_ID=$(uuidgen)
+ENDPOINT=127.0.0.1:18486
+
+# 2. In one terminal, host the bridge with a delayed stdin so the message is
+#    sent after the channel server has had time to connect. The
+#    ControlServer.deliver hello-gate (default 30s) tolerates moderate
+#    timing skew, but a generous pre-delay removes the race entirely:
+( sleep 25 && echo "what is 11 squared?" && sleep 90 ) \
+  | bun apps/ccb/src/cli.ts serve \
+      --endpoint "$ENDPOINT" --session-id "$SESSION_ID" \
+      --format json > /tmp/ccb-verify-serve.log 2>&1 &
+
+# 3. In a second terminal (real TTY required), launch the harness pointed at
+#    the same bridge. NODE_PATH resolves @homebridge/node-pty-prebuilt-multiarch
+#    from the workspace's isolated install layout.
+NODE_PATH="$PWD/packages/process/node_modules" \
+  node scripts/diagnostics/claude-pty-trace.cjs \
+    --endpoint "$ENDPOINT" --session-id "$SESSION_ID"
+
+# 4. Watch the bridge's JSONL event stream and the PTY trace log:
+tail -f /tmp/ccb-verify-serve.log
+tail -f /tmp/claude-pty-trace.log
+```
+
+A successful run produces the canonical reply chain in the bridge log:
+
+```jsonl
+{"type":"session.started", ...}
+{"type":"message.sent", ..., "content":"what is 11 squared?"}
+{"type":"agent.reply", ..., "content":"11 squared is 121.", "final":true}
+{"type":"agent.done", ...}
+```
+
+### Why the harness exists
+
+`ClaudeCodeSupervisor` reads claude's PTY via `node-pty`'s `onData` callback. Under Bun on Linux at the time of writing, NAPI gaps prevent that callback from firing reliably — the supervisor cannot see what `claude` prints, so debugging managed-launch failures is blind. The harness sidesteps Bun by spawning `claude` from a Node process where `node-pty`'s `onData` works, then logs every byte. The bridge itself (the `ccb serve` half above) still runs under Bun and exercises the production code path.
+
+The harness is diagnostic-only and does NOT replace `ccb demo --supervisor=claude` as the supported single-command path. It is for debugging.
+
+### CLI options
+
+- `--endpoint <host:port>` — bridge control endpoint (default `127.0.0.1:18484`).
+- `--session-id <uuid>` — required; must match the bridge's `--session-id`.
+- `--log <path>` — PTY trace log file (default `/tmp/claude-pty-trace.log`).
+- `--mcp-config <path>` — override the temp `.mcp.json` path the harness writes.
+
+The harness exits when `claude` exits. Ctrl-C tears down `claude` and removes the temp config.
+
+### Common diagnoses
+
+| symptom in `/tmp/claude-pty-trace.log` | likely cause |
+|---|---|
+| WARNING block prints but no `Enter to confirm` line | claude's UI text drifted; update the supervisor's hint constant |
+| Hint visible but no further activity | auto-confirm `\r` isn't reaching claude; check the harness's `[harness] auto-confirm` lines for write failures |
+| Banner renders, then the channel-server bin's `connect()` shows `ECONNREFUSED` | bridge isn't listening on the endpoint the harness's `.mcp.json` advertises |
+| Channel server appears in `ps -ef`, TCP `ESTAB` to the bridge, but `inject failed: no connected client` in the bridge log | hello arrived after the bridge tried to deliver; the `ControlServer.deliver` hello-gate (default 30s) tolerates this, but check both timestamps |
+
 ## Known limitations
 
 - **Managed launch requires `node-pty`.** The supervisor wraps `claude` in `node-pty` to satisfy its boot-time TTY check while keeping reply/progress data off the PTY. If `node-pty` cannot build/load on the host, `ClaudeCodeSupervisor.start` throws `LauncherUnavailableError` and the three-terminal fallback above is the supported path.
