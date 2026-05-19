@@ -329,6 +329,112 @@ test("kill is idempotent under concurrent callers (same exit, single escalation 
   }
 });
 
+test("CCB_STRACE wraps the spawn command under /usr/bin/strace", async () => {
+  const captured: { command: string; args: string[] }[] = [];
+  mock.module("@homebridge/node-pty-prebuilt-multiarch", () => ({
+    spawn: (
+      command: string,
+      args: string[],
+      opts?: { cwd?: string; env?: Record<string, string> },
+    ) => {
+      captured.push({ command, args: [...args] });
+      // Spawn a quick no-op child so the launcher has a valid handle and the
+      // assertions below can still observe exit/teardown without leaking.
+      return fakeSpawn("bash", ["-c", "true"], opts);
+    },
+  }));
+  const previous = process.env.CCB_STRACE;
+  process.env.CCB_STRACE = "/tmp/test.log";
+  try {
+    const fresh = await import(`./launcher.ts?strace=${Date.now()}`);
+    const handle = fresh.launch("claude", ["--foo"]);
+    await handle.waitExit();
+    expect(captured.length).toBe(1);
+    expect(captured[0]?.command).toBe("/usr/bin/strace");
+    expect(captured[0]?.args).toEqual([
+      "-f",
+      "-tt",
+      "-e",
+      "trace=read,write,connect,execve,close,openat",
+      "-s",
+      "4096",
+      "-o",
+      "/tmp/test.log",
+      "claude",
+      "--foo",
+    ]);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.CCB_STRACE;
+    } else {
+      process.env.CCB_STRACE = previous;
+    }
+    mock.module("@homebridge/node-pty-prebuilt-multiarch", () => fakeNodePty);
+  }
+});
+
+test("CCB_STRACE empty string is treated as unset", async () => {
+  const captured: { command: string; args: string[] }[] = [];
+  mock.module("@homebridge/node-pty-prebuilt-multiarch", () => ({
+    spawn: (
+      command: string,
+      args: string[],
+      opts?: { cwd?: string; env?: Record<string, string> },
+    ) => {
+      captured.push({ command, args: [...args] });
+      return fakeSpawn("bash", ["-c", "true"], opts);
+    },
+  }));
+  const previous = process.env.CCB_STRACE;
+  process.env.CCB_STRACE = "";
+  try {
+    const fresh = await import(`./launcher.ts?strace_empty=${Date.now()}`);
+    const handle = fresh.launch("foo", ["bar"]);
+    await handle.waitExit();
+    expect(captured.length).toBe(1);
+    expect(captured[0]?.command).toBe("foo");
+    expect(captured[0]?.args).toEqual(["bar"]);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.CCB_STRACE;
+    } else {
+      process.env.CCB_STRACE = previous;
+    }
+    mock.module("@homebridge/node-pty-prebuilt-multiarch", () => fakeNodePty);
+  }
+});
+
+test("CCB_STRACE unset leaves the command unchanged", async () => {
+  const captured: { command: string; args: string[] }[] = [];
+  mock.module("@homebridge/node-pty-prebuilt-multiarch", () => ({
+    spawn: (
+      command: string,
+      args: string[],
+      opts?: { cwd?: string; env?: Record<string, string> },
+    ) => {
+      captured.push({ command, args: [...args] });
+      return fakeSpawn("bash", ["-c", "true"], opts);
+    },
+  }));
+  const previous = process.env.CCB_STRACE;
+  delete process.env.CCB_STRACE;
+  try {
+    const fresh = await import(`./launcher.ts?strace_unset=${Date.now()}`);
+    const handle = fresh.launch("baz", ["qux"]);
+    await handle.waitExit();
+    expect(captured.length).toBe(1);
+    expect(captured[0]?.command).toBe("baz");
+    expect(captured[0]?.args).toEqual(["qux"]);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.CCB_STRACE;
+    } else {
+      process.env.CCB_STRACE = previous;
+    }
+    mock.module("@homebridge/node-pty-prebuilt-multiarch", () => fakeNodePty);
+  }
+});
+
 test("LauncherUnavailableError: thrown when node-pty fails to load", async () => {
   // Swap the mocked module to throw on access of `spawn`. Using a getter
   // simulates a require-time failure path.

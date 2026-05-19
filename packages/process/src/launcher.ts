@@ -116,9 +116,38 @@ function loadNodePty(): PtyModule {
 
 export function launch(command: string, args: string[], opts?: LaunchOpts): LauncherHandle {
   const pty = loadNodePty();
+  /**
+   * Diagnostic seam: when `CCB_STRACE` is set to a non-empty path, wrap the
+   * spawned command under strace so every read/write/connect/execve/close/
+   * openat syscall is captured to the given file. Motivating case is the
+   * NAPI-compat gap in Bun (oven-sh/bun#18546) where node-pty's PTY traffic
+   * can be invisible to higher-level instrumentation; strace sits below that
+   * layer and produces a faithful trace even when the runtime's libuv shim
+   * does not. Requires `strace` installed at `/usr/bin/strace` (Linux only;
+   * verify with `command -v strace`). Diagnostic-only — never enable in
+   * production, the per-syscall overhead is severe.
+   */
+  const stracePath = process.env.CCB_STRACE;
+  let spawnCommand = command;
+  let spawnArgs = args;
+  if (stracePath !== undefined && stracePath.length > 0) {
+    spawnCommand = "/usr/bin/strace";
+    spawnArgs = [
+      "-f",
+      "-tt",
+      "-e",
+      "trace=read,write,connect,execve,close,openat",
+      "-s",
+      "4096",
+      "-o",
+      stracePath,
+      command,
+      ...args,
+    ];
+  }
   let term: PtyTerminal;
   try {
-    term = pty.spawn(command, args, {
+    term = pty.spawn(spawnCommand, spawnArgs, {
       cwd: opts?.cwd,
       env: opts?.env,
       cols: opts?.cols ?? 80,
