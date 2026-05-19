@@ -12,7 +12,7 @@ import {
 } from "@ccb/core";
 import { ControlServer, type ControlServerEndpoint } from "@ccb/mcp-channel";
 import { launch as defaultLaunch, type LauncherHandle, type LaunchOpts } from "@ccb/process";
-import { generateMcpConfig } from "./config.ts";
+import { generateHooksSettings, generateMcpConfig, type HookEvent } from "./config.ts";
 
 /**
  * How the supervisor asks `claude` to load the ccb channel server.
@@ -37,9 +37,15 @@ export type LauncherFactory = (
 /**
  * Hook for tests to swap `node:fs/promises`'s `writeFile` for an in-process
  * fake (e.g. to simulate EACCES). Matches the subset of the real signature the
- * supervisor uses.
+ * supervisor uses — either the plain encoding form or the
+ * `{ encoding, mode }` object form (used for the per-session settings.json,
+ * which is created with mode `0600`).
  */
-export type WriteFileFn = (path: string, data: string, encoding: "utf8") => Promise<void>;
+export type WriteFileFn = (
+  path: string,
+  data: string,
+  options: "utf8" | { encoding: "utf8"; mode?: number },
+) => Promise<void>;
 
 export interface ClaudeCodeSupervisorOptions {
   /**
@@ -78,6 +84,14 @@ export interface ClaudeCodeSupervisorOptions {
   readonly launcherFactory?: LauncherFactory;
   /** Override fs writeFile (test seam). */
   readonly writeFile?: WriteFileFn;
+  /**
+   * Hook events to register with claude via a per-session settings.json. When
+   * set, the supervisor writes the snippet returned by `generateHooksSettings`
+   * to a mode-0600 file under its own temp dir and passes the path through
+   * `--settings`. Off by default; flip on for observational tool-event
+   * visibility (see docs/M3.md).
+   */
+  readonly hooks?: { readonly events: ReadonlyArray<HookEvent> };
 }
 
 /**
@@ -161,6 +175,17 @@ function resolveChannelServerBinPath(): string {
 }
 
 /**
+ * Resolve the absolute path to `packages/mcp-channel/src/hook-relay.ts` so
+ * the per-session settings.json registers the relay bin by its actual file
+ * location — no PATH lookup for `bunx ccb-hook-relay` from the managed path.
+ */
+function resolveHookRelayBinPath(): string {
+  const here = fileURLToPath(import.meta.url);
+  const packagesDir = resolvePath(dirname(here), "..", "..");
+  return resolvePath(packagesDir, "mcp-channel", "src", "hook-relay.ts");
+}
+
+/**
  * Supervisor that owns the spawned `claude` process for the lifetime of a
  * session. Boots `claude` via a PTY (claude exits to `--print` when stdout is
  * not a TTY), wires a per-session `.mcp.json` so the channel server connects
@@ -174,12 +199,14 @@ export class ClaudeCodeSupervisor implements Supervisor {
   readonly #autoConfirmMaxAttempts: number;
   readonly #launcherFactory: LauncherFactory;
   readonly #writeFile: WriteFileFn;
+  readonly #hooks: { readonly events: ReadonlyArray<HookEvent> } | undefined;
 
   #ctx: SupervisorContext | undefined;
   #server: ControlServer | undefined;
   #serverEndpoint: ControlServerEndpoint | undefined;
   #launcher: LauncherHandle | undefined;
   #tempDir: string | undefined;
+  #settingsPath: string | undefined;
   #autoConfirmCleanup: (() => void) | undefined;
   #hookFanin: HookFanin | undefined;
 
@@ -194,6 +221,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
     this.#launcherFactory =
       options.launcherFactory ?? ((cmd, args, opts) => defaultLaunch(cmd, [...args], opts));
     this.#writeFile = options.writeFile ?? writeFile;
+    this.#hooks = options.hooks;
   }
 
   /**
@@ -272,6 +300,24 @@ export class ClaudeCodeSupervisor implements Supervisor {
       });
       await this.#writeFile(mcpConfigPath, JSON.stringify(config, null, 2), "utf8");
 
+      if (this.#hooks) {
+        const settingsPath = join(tempDir, "settings.json");
+        const settings = generateHooksSettings({
+          events: this.#hooks.events,
+          command: process.execPath,
+          args: [resolveHookRelayBinPath()],
+        });
+        // mode 0600 per docs/M3.md: the file lives under tmpdir() for the
+        // lifetime of the session; user-only read/write is the right default
+        // because the hook-relay command line carries no secrets but the
+        // settings.json is per-session and unrelated to other users.
+        await this.#writeFile(settingsPath, JSON.stringify(settings, null, 2), {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+        this.#settingsPath = settingsPath;
+      }
+
       const args = this.#buildClaudeArgs(mcpConfigPath, process.cwd());
       // Propagate the dynamic bridge endpoint + session id through claude's
       // environment so plugin-mode mcpServers entries that template
@@ -288,6 +334,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
       this.#launcher = launcher;
     } catch (err) {
       await this.#cleanupTempFiles();
+      this.#settingsPath = undefined;
       this.#ctx = undefined;
       this.#hookFanin = undefined;
       const closingServer = this.#server;
@@ -341,6 +388,11 @@ export class ClaudeCodeSupervisor implements Supervisor {
     this.#serverEndpoint = undefined;
     this.#ctx = undefined;
     this.#hookFanin = undefined;
+    // The settings.json file lives under #tempDir, so #cleanupTempFiles
+    // (called below) removes it transitively. We null #settingsPath here so a
+    // subsequent #buildClaudeArgs (e.g. a future restart) does not pass a
+    // stale --settings path.
+    this.#settingsPath = undefined;
 
     if (launcher) {
       try {
@@ -384,6 +436,9 @@ export class ClaudeCodeSupervisor implements Supervisor {
       args.push("--channels", "plugin:ccb@ccb-local");
     }
     args.push("--add-dir", cwd);
+    if (this.#settingsPath !== undefined) {
+      args.push("--settings", this.#settingsPath);
+    }
     args.push("--allowed-tools", ALLOWED_TOOLS);
     return args;
   }

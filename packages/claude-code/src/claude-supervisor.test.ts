@@ -161,6 +161,7 @@ async function startWithFakeLauncher(opts: {
   autoConfirmRetryIntervalMs?: number;
   autoConfirmMaxAttempts?: number;
   startTimeoutMs?: number;
+  hooks?: { events: ReadonlyArray<"PreToolUse" | "PostToolUse" | "Stop"> };
 }): Promise<{
   supervisor: ClaudeCodeSupervisor;
   ctx: SupervisorContext;
@@ -182,6 +183,7 @@ async function startWithFakeLauncher(opts: {
     autoConfirmRetryIntervalMs: opts.autoConfirmRetryIntervalMs,
     autoConfirmMaxAttempts: opts.autoConfirmMaxAttempts,
     startTimeoutMs: opts.startTimeoutMs,
+    hooks: opts.hooks,
     launcherFactory: factory,
   });
   const emitted: BridgeEvent[] = [];
@@ -854,6 +856,69 @@ test("peer-close: synthesizes crash event pair when the channel client drops", a
 
   // Bridge already tore the session down via the supervisor-emitted
   // session.ended; close is a no-op for this session id.
+});
+
+test("hooks option: writes a temp settings.json and passes its path via --settings", async () => {
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
+    channels: "dev-flag",
+    hooks: { events: ["PreToolUse", "PostToolUse", "Stop"] },
+  });
+  await startResult;
+  const args = [...launcher.args];
+  expect(args).toContain("--settings");
+  const idx = args.indexOf("--settings");
+  const settingsPath = args[idx + 1];
+  if (!settingsPath) throw new Error("missing --settings value");
+  const exists = await stat(settingsPath).then(
+    () => true,
+    () => false,
+  );
+  expect(exists).toBe(true);
+  const parsed = JSON.parse(await readFile(settingsPath, "utf8")) as {
+    hooks: Record<string, Array<{ hooks: Array<{ type: string; command: string }> }>>;
+  };
+  expect(Object.keys(parsed.hooks).sort()).toEqual(["PostToolUse", "PreToolUse", "Stop"]);
+  // The managed launch wires the relay through process.execPath + absolute
+  // hook-relay.ts path so PATH lookups never enter the picture for the bin.
+  const preCmd = parsed.hooks.PreToolUse?.[0]?.hooks[0]?.command;
+  expect(preCmd).toContain(process.execPath);
+  expect(preCmd).toMatch(/packages\/mcp-channel\/src\/hook-relay\.ts PreToolUse$/);
+  await helloClient.close();
+  await supervisor.close(FAKE_SESSION_ID);
+  // settings.json is cleaned up alongside the supervisor's temp dir on close.
+  const stillThere = await stat(settingsPath).then(
+    () => true,
+    () => false,
+  );
+  expect(stillThere).toBe(false);
+});
+
+test("hooks option: --settings is omitted when hooks option is not set", async () => {
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
+    channels: "dev-flag",
+  });
+  await startResult;
+  expect([...launcher.args]).not.toContain("--settings");
+  await helloClient.close();
+  await supervisor.close(FAKE_SESSION_ID);
+});
+
+test("hooks option: only the requested events appear in settings.json", async () => {
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
+    channels: "dev-flag",
+    hooks: { events: ["Stop"] },
+  });
+  await startResult;
+  const args = [...launcher.args];
+  const idx = args.indexOf("--settings");
+  const settingsPath = args[idx + 1];
+  if (!settingsPath) throw new Error("missing --settings value");
+  const parsed = JSON.parse(await readFile(settingsPath, "utf8")) as {
+    hooks: Record<string, unknown>;
+  };
+  expect(Object.keys(parsed.hooks)).toEqual(["Stop"]);
+  await helloClient.close();
+  await supervisor.close(FAKE_SESSION_ID);
 });
 
 test("cooperative close: does NOT synthesize crash events", async () => {

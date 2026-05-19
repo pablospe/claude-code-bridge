@@ -2,12 +2,14 @@
 import {
   type ChannelsMode,
   claudeCodeSupervisorFactory,
+  type HookEvent,
   mockSupervisorFactory,
 } from "@ccb/claude-code";
 import type { SupervisorFactory } from "@ccb/core";
 import { Command, InvalidArgumentError } from "commander";
 import { type DemoFormat, runDemo } from "./demo.ts";
 import { formatJson, formatPretty } from "./format.ts";
+import { runHooksConfig } from "./hooks-config.ts";
 import { isValidEndpoint, runMcpConfig } from "./mcp-config.ts";
 import { runServe, type ServeFormat } from "./serve.ts";
 
@@ -45,6 +47,32 @@ interface McpConfigCommandOptions {
   readonly sessionId?: string;
   readonly endpoint: string;
   readonly out?: string;
+}
+
+interface HooksConfigCommandOptions {
+  readonly events: ReadonlyArray<HookEvent>;
+  readonly out?: string;
+}
+
+const VALID_HOOK_EVENTS: ReadonlyArray<HookEvent> = ["PreToolUse", "PostToolUse", "Stop"];
+
+function parseHookEventsOption(value: string): ReadonlyArray<HookEvent> {
+  const parts = value
+    .split(",")
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  if (parts.length === 0) {
+    throw new InvalidArgumentError("--events must be a non-empty comma-separated list");
+  }
+  const valid = new Set<string>(VALID_HOOK_EVENTS);
+  for (const p of parts) {
+    if (!valid.has(p)) {
+      throw new InvalidArgumentError(
+        `unknown hook event ${p}; expected one of ${VALID_HOOK_EVENTS.join(", ")}`,
+      );
+    }
+  }
+  return parts as ReadonlyArray<HookEvent>;
 }
 
 interface ServeCommandOptions {
@@ -196,6 +224,23 @@ export function buildProgram(): Command {
         endpoint: opts.endpoint,
         out: opts.out,
       });
+      process.stdout.write(`${output}\n`);
+    });
+
+  program
+    .command("hooks-config")
+    .description(
+      "emit a settings.json snippet that registers ccb-hook-relay for the requested events; the user must export CCB_BRIDGE_ENDPOINT and CCB_SESSION_ID before invoking claude on the unmanaged path",
+    )
+    .option(
+      "--events <list>",
+      "comma-separated subset of PreToolUse,PostToolUse,Stop",
+      parseHookEventsOption,
+      VALID_HOOK_EVENTS,
+    )
+    .option("--out <path>", "write the JSON to this path instead of stdout")
+    .action(async (opts: HooksConfigCommandOptions) => {
+      const output = await runHooksConfig({ events: opts.events, out: opts.out });
       process.stdout.write(`${output}\n`);
     });
 

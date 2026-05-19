@@ -5,5 +5,15 @@ export {
   claudeCodeSupervisorFactory,
   type LauncherFactory,
 } from "./claude-supervisor.ts";
-export { generateMcpConfig, type McpConfig, type McpConfigOptions } from "./config.ts";
+export {
+  generateHooksSettings,
+  generateMcpConfig,
+  type HookEvent,
+  type HooksSettings,
+  type HooksSettingsHookEntry,
+  type HooksSettingsMatcherEntry,
+  type HooksSettingsOptions,
+  type McpConfig,
+  type McpConfigOptions,
+} from "./config.ts";
 export { MockSupervisor, mockSupervisorFactory } from "./mock-supervisor.ts";

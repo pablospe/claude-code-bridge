@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { generateMcpConfig } from "./index.ts";
+import { generateHooksSettings, generateMcpConfig } from "./index.ts";
 
 test("generateMcpConfig returns default ccb mcpServer entry", () => {
   const cfg = generateMcpConfig({ sessionId: "s1", endpoint: "127.0.0.1:8080" });
@@ -36,4 +36,54 @@ test("generateMcpConfig output is JSON-serializable roundtrip", () => {
   const cfg = generateMcpConfig({ sessionId: "s3", endpoint: "127.0.0.1:5555" });
   const roundtrip = JSON.parse(JSON.stringify(cfg));
   expect(roundtrip).toEqual(cfg);
+});
+
+test("generateHooksSettings: default command emits bunx ccb-hook-relay per event", () => {
+  const s = generateHooksSettings({ events: ["PreToolUse", "PostToolUse", "Stop"] });
+  expect(s).toEqual({
+    hooks: {
+      PreToolUse: [
+        {
+          hooks: [{ type: "command", command: "bunx ccb-hook-relay PreToolUse" }],
+        },
+      ],
+      PostToolUse: [
+        {
+          hooks: [{ type: "command", command: "bunx ccb-hook-relay PostToolUse" }],
+        },
+      ],
+      Stop: [
+        {
+          hooks: [{ type: "command", command: "bunx ccb-hook-relay Stop" }],
+        },
+      ],
+    },
+  });
+});
+
+test("generateHooksSettings: only includes events present in the input", () => {
+  const s = generateHooksSettings({ events: ["PreToolUse"] });
+  expect(Object.keys(s.hooks)).toEqual(["PreToolUse"]);
+  expect(s.hooks.PreToolUse?.[0]?.hooks[0]?.command).toBe("bunx ccb-hook-relay PreToolUse");
+});
+
+test("generateHooksSettings: honors custom command and args (joins with spaces and event name)", () => {
+  const s = generateHooksSettings({
+    events: ["Stop"],
+    command: "/usr/local/bin/bun",
+    args: ["/abs/path/hook-relay.ts"],
+  });
+  expect(s.hooks.Stop?.[0]?.hooks[0]).toEqual({
+    type: "command",
+    command: "/usr/local/bin/bun /abs/path/hook-relay.ts Stop",
+  });
+});
+
+test("generateHooksSettings: rejects an empty events array", () => {
+  expect(() => generateHooksSettings({ events: [] })).toThrow(/non-empty array/);
+});
+
+test("generateHooksSettings: output is JSON-serializable roundtrip", () => {
+  const s = generateHooksSettings({ events: ["PreToolUse", "PostToolUse"] });
+  expect(JSON.parse(JSON.stringify(s))).toEqual(s);
 });
