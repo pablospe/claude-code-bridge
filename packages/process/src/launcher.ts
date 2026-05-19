@@ -9,7 +9,9 @@
  * `docs/SMOKE.md`'s manual fallback.
  */
 
+import { read as fsRead, write as fsWrite } from "node:fs";
 import { createRequire } from "node:module";
+import { Duplex } from "node:stream";
 
 /** Public error type for the node-pty-unavailable path. */
 export class LauncherUnavailableError extends Error {
@@ -106,7 +108,109 @@ function safeKill(term: PtyTerminal, signal: string): void {
 // itself surfaces a problem (rather than the first `launch()` call).
 const _require = createRequire(import.meta.url);
 
+/**
+ * Under Bun, `tty.ReadStream(fd)` does not emit `'data'` events for non-
+ * blocking PTY master file descriptors. node-pty wires its `'data'` event
+ * through exactly that stream (`_socket = new tty.ReadStream(term.fd)` in
+ * `unixTerminal.js`), so `term.onData` silently never fires. Tracked at
+ * oven-sh/bun#25822; root-cause analysis + working polyfill posted by
+ * @w4sspr on 2026-04-30 in that thread.
+ *
+ * Workaround: replace `tty.ReadStream` on Bun BEFORE node-pty is required,
+ * with a `Duplex` that drives an `fs.read` poll loop against the fd for
+ * reads and an `fs.write` for the write path (node-pty calls
+ * `_socket.write(data)`). The fd already owns the PTY master; the stream
+ * simply pushes bytes as they arrive, satisfying node-pty's expectation
+ * that `_socket` emits `'data'` events. No effect on Node — `tty.ReadStream`
+ * is left untouched there.
+ */
+const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
+let bunTtyPolyfillInstalled = false;
+function ensureBunTtyPolyfill(): void {
+  if (!isBun || bunTtyPolyfillInstalled) return;
+  bunTtyPolyfillInstalled = true;
+
+  /**
+   * Drop-in `Duplex` that polls the PTY master fd via `fs.read` and writes
+   * via `fs.write`. Ported from the upstream polyfill at oven-sh/bun#25822
+   * (comment 2026-04-30 by @w4sspr), adapted from a `Readable` to a `Duplex`
+   * because node-pty calls `_socket.write(data)` for the write path
+   * (`unixTerminal.js:_write` -> `this._socket.write(data)`). Choices
+   * preserved from the upstream design:
+   *   - 64 KiB read buffer (fits typical PTY bursts in a single read).
+   *   - 5 ms `setTimeout` back-off on EAGAIN (no spin when idle).
+   *   - `setImmediate` between reads when data flowed (low latency).
+   *   - Push `null` on EIO/EBADF (master closed = EOF).
+   *   - Copy the buffer slice before push: subsequent reads overwrite
+   *     `_buf` while a slow consumer may still hold prior chunks.
+   */
+  class PollingPtyStream extends Duplex {
+    private readonly _fd: number;
+    private readonly _buf: Buffer;
+    constructor(fd: number) {
+      super({ highWaterMark: 64 * 1024 });
+      this._fd = fd;
+      this._buf = Buffer.alloc(64 * 1024);
+      this._pump();
+    }
+    override _read(_size: number): void {
+      /* noop: data is pushed by _pump */
+    }
+    override _write(
+      chunk: Buffer | string,
+      encoding: BufferEncoding,
+      cb: (e?: Error | null) => void,
+    ): void {
+      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
+      fsWrite(this._fd, data, 0, data.length, null, (err) => cb(err ?? null));
+    }
+    override _destroy(err: Error | null, cb: (e?: Error | null) => void): void {
+      cb(err);
+    }
+    private _pump(): void {
+      if (this.destroyed) return;
+      fsRead(this._fd, this._buf, 0, this._buf.length, null, (err, n) => {
+        if (this.destroyed) return;
+        if (err) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code === "EAGAIN") {
+            setTimeout(() => this._pump(), 5).unref?.();
+            return;
+          }
+          if (code === "EIO" || code === "EBADF") {
+            this.push(null);
+            return;
+          }
+          this.emit("error", err);
+          return;
+        }
+        if (n > 0) {
+          this.push(Buffer.from(this._buf.subarray(0, n)));
+        } else {
+          this.push(null);
+          return;
+        }
+        setImmediate(() => this._pump());
+      });
+    }
+  }
+
+  // node-pty's UnixTerminal calls `new tty.ReadStream(term.fd)` and treats
+  // the resulting object as a duplex socket (`setEncoding`, `on('data')`,
+  // `on('error')`, `on('close')`, `write`, `destroy`, `resume`). Our
+  // `PollingPtyStream` implements that contract via `Duplex` semantics.
+  //
+  // Use `require("tty")` (CJS) rather than `import * as tty from "node:tty"`:
+  // ESM namespace objects refuse re-assignment, but the CJS exports object
+  // is the same record node-pty resolves via its own `require("tty")` (see
+  // `unixTerminal.js:18`), so patching this binding affects the same
+  // namespace node-pty observes.
+  const ttyModule = _require("tty") as { ReadStream: unknown };
+  ttyModule.ReadStream = PollingPtyStream;
+}
+
 function loadNodePty(): PtyModule {
+  ensureBunTtyPolyfill();
   try {
     return _require("@homebridge/node-pty-prebuilt-multiarch") as PtyModule;
   } catch (err) {
