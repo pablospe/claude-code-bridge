@@ -93,7 +93,15 @@ const DEV_CHANNELS_CONFIRM_HINT = "Enter to confirm";
  * via onData. 3s is earlier than the original 5s single-shot because we now
  * retry — a slightly early miss is recovered by the next attempt.
  */
-const DEFAULT_AUTO_CONFIRM_INITIAL_DELAY_MS = 3_000;
+// The dev-channels confirmation dialog appears immediately when claude
+// boots with `--dangerously-load-development-channels`. Empirical finding
+// (under strace and direct manual launches): the dialog is on screen
+// within ~200ms of PTY allocation. At 3000ms our blind \r missed the
+// dialog window on fast hosts — claude had already moved past it. 500ms
+// gives the PTY time to settle while still landing inside the dialog
+// window. The retry interval (3s) covers any host where 500ms is too
+// aggressive.
+const DEFAULT_AUTO_CONFIRM_INITIAL_DELAY_MS = 500;
 /**
  * Spacing between subsequent blind `\r` writes. 3s matches the initial delay
  * so the schedule is simple to reason about: \r at 3, 6, 9, ... seconds.
