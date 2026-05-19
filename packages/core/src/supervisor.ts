@@ -92,7 +92,13 @@ export function dispatchHookEvent(
   });
 }
 
-function truncateHookPayload(payload: Record<string, unknown>): Record<string, unknown> {
+/**
+ * Apply the 64 KB per-field truncation policy to a raw hook payload and
+ * return a new object suitable for embedding in `tool.event.payload.data`.
+ * Exposed for `HookFanin`, which truncates at queue-time so the bounded
+ * pre-hello queue holds bounded-size payloads.
+ */
+export function truncateHookPayload(payload: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...payload };
   const truncatedFields: string[] = [];
   for (const field of HOOK_TRUNCATABLE_FIELDS) {

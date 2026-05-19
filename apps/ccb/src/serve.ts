@@ -3,8 +3,8 @@ import {
   Bridge,
   type BridgeEvent,
   dispatchBridgeTool,
-  dispatchHookEvent,
   emitCrashEvents,
+  HookFanin,
   type Supervisor,
   type SupervisorContext,
 } from "@ccb/core";
@@ -68,6 +68,7 @@ class ServeSupervisor implements Supervisor {
   readonly #onListening: (info: { host: string; port: number; endpoint: string }) => void;
   #server: ControlServer | undefined;
   #ctx: SupervisorContext | undefined;
+  #hookFanin: HookFanin | undefined;
 
   constructor(
     host: string,
@@ -86,6 +87,7 @@ class ServeSupervisor implements Supervisor {
     this.#ctx = ctx;
     const wireId = this.#wireSessionId;
     const server = new ControlServer();
+    this.#hookFanin = new HookFanin(ctx);
     try {
       const info = await server.listen({ host: this.#host, port: this.#port });
       this.#server = server;
@@ -95,12 +97,15 @@ class ServeSupervisor implements Supervisor {
       });
       server.on("hook", (sid, event, payload) => {
         if (sid !== wireId) return;
-        const ctx = this.#ctx;
-        if (!ctx) return;
-        dispatchHookEvent(ctx, event, payload);
+        this.#hookFanin?.onHook(event, payload);
+      });
+      server.on("hello", (sid) => {
+        if (sid !== wireId) return;
+        this.#hookFanin?.onHello();
       });
       server.on("peer-close", (sid) => {
         if (sid !== wireId) return;
+        this.#hookFanin?.onPeerClose();
         this.#handlePeerClose();
       });
       this.#onListening(info);
@@ -131,6 +136,7 @@ class ServeSupervisor implements Supervisor {
     const server = this.#server;
     this.#server = undefined;
     this.#ctx = undefined;
+    this.#hookFanin = undefined;
     if (!server) return;
     try {
       await server.close();

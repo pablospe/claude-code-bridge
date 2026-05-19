@@ -4,8 +4,8 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   dispatchBridgeTool,
-  dispatchHookEvent,
   emitCrashEvents,
+  HookFanin,
   type Supervisor,
   type SupervisorContext,
   type SupervisorFactory,
@@ -181,6 +181,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
   #launcher: LauncherHandle | undefined;
   #tempDir: string | undefined;
   #autoConfirmCleanup: (() => void) | undefined;
+  #hookFanin: HookFanin | undefined;
 
   constructor(options: ClaudeCodeSupervisorOptions = {}) {
     this.#channels = options.channels ?? "dev-flag";
@@ -207,6 +208,15 @@ export class ClaudeCodeSupervisor implements Supervisor {
     return this.#serverEndpoint;
   }
 
+  /**
+   * Pre-hello hook queue metrics. Test/debug seam — not part of the
+   * `Supervisor` contract. Returns `undefined` before `start()` and after
+   * `close()`.
+   */
+  get hookMetrics(): import("@ccb/core").HookFaninMetrics | undefined {
+    return this.#hookFanin?.metrics();
+  }
+
   async start(ctx: SupervisorContext): Promise<void> {
     if (this.#server || this.#launcher) {
       throw new Error("supervisor already started");
@@ -224,11 +234,14 @@ export class ClaudeCodeSupervisor implements Supervisor {
       if (!current) return;
       dispatchBridgeTool(current, name, args);
     });
+    this.#hookFanin = new HookFanin(ctx);
     server.on("hook", (sid, event, payload) => {
       if (sid !== sessionId) return;
-      const current = this.#ctx;
-      if (!current) return;
-      dispatchHookEvent(current, event, payload);
+      this.#hookFanin?.onHook(event, payload);
+    });
+    server.on("hello", (sid) => {
+      if (sid !== sessionId) return;
+      this.#hookFanin?.onHello();
     });
     // Channel-server peer dropped its TCP control connection (crash, kill -9).
     // Synthesize the crash event pair so the bridge transitions the session
@@ -237,6 +250,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
     // listener fires only on unexpected disconnects.
     server.on("peer-close", (sid) => {
       if (sid !== sessionId) return;
+      this.#hookFanin?.onPeerClose();
       const current = this.#ctx;
       if (!current) return;
       emitCrashEvents(current);
@@ -275,6 +289,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
     } catch (err) {
       await this.#cleanupTempFiles();
       this.#ctx = undefined;
+      this.#hookFanin = undefined;
       const closingServer = this.#server;
       this.#server = undefined;
       this.#serverEndpoint = undefined;
@@ -325,6 +340,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
     this.#server = undefined;
     this.#serverEndpoint = undefined;
     this.#ctx = undefined;
+    this.#hookFanin = undefined;
 
     if (launcher) {
       try {
