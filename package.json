@@ -1,7 +1,10 @@
 {
-  "name": "claudecode-bridge",
+  "name": "@pablospe/claude-code-bridge",
   "version": "0.1.0",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "Bridge that drives interactive Claude Code sessions from external UIs via the channels MCP surface. Provides a managed launch path (bridge spawns claude via node-pty), an observational hook relay (PreToolUse / PostToolUse / Stop surfaced as tool.event records), and a JSONL event store.",
   "repository": {
     "type": "git",

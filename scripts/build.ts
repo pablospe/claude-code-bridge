@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Build pipeline for claudecode-bridge: orchestrates the bin + library
+// Build pipeline for @pablospe/claude-code-bridge: orchestrates the bin + library
 // bundles via `bun build`, the declaration emit via `tsc`, and the
 // post-processing hacks documented in `./build-post-process.ts`.
 //

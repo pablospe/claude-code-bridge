@@ -21,7 +21,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 // keeps four dependencies external (@homebridge/node-pty-prebuilt-multiarch,
 // @modelcontextprotocol/sdk, commander, zod). Symlinking the repo's
 // node_modules into the extract dir gives node the resolution it would have
-// after `bun install claudecode-bridge` in a real consumer scope.
+// after `bun install @pablospe/claude-code-bridge` in a real consumer scope.
 const ROOT_NODE_MODULES = resolve(ROOT, "node_modules");
 
 const BIN_NAMES = ["ccb.js", "ccb-channel-server.js", "ccb-hook-relay.js"] as const;

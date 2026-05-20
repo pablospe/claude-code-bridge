@@ -322,18 +322,18 @@ The managed-launch path (`bun apps/ccb/src/cli.ts demo --supervisor=claude`) doe
 
 Validates the publish artifact end-to-end against real `claude`. The M4
 plugin manifest invokes bare bin names (`ccb-channel-server`,
-`ccb-hook-relay`) and relies on a prior `bun add -g claudecode-bridge`
+`ccb-hook-relay`) and relies on a prior `bun add -g @pablospe/claude-code-bridge`
 to put them on PATH. These smokes prove that contract.
 
 ### Manual: install from a packed tarball
 
 ```bash
 bun run build && bun pm pack
-# produces claudecode-bridge-0.1.0.tgz in the repo root
+# produces pablospe-claude-code-bridge-0.1.0.tgz in the repo root
 
 mkdir -p /tmp/ccb-install-smoke && cd /tmp/ccb-install-smoke
 bun init -y
-bun add /path/to/claudecode-bridge-0.1.0.tgz
+bun add /path/to/pablospe-claude-code-bridge-0.1.0.tgz
 export PATH="$PWD/node_modules/.bin:$PATH"
 
 ccb-channel-server --help    # sanity check: bundled bin loads

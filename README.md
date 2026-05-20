@@ -42,7 +42,7 @@ The protocol shape works end-to-end against an in-process mock and against a rea
 ## Install
 
 `bun ≥ 1.3` must be on PATH. The bridge is published to npm as
-[`claudecode-bridge`](https://www.npmjs.com/package/claudecode-bridge)
+[`@pablospe/claude-code-bridge`](https://www.npmjs.com/package/@pablospe/claude-code-bridge)
 (unscoped; the unhyphenated `claude-code-bridge` is taken on npm by a
 different author — the GitHub repo name stays `claude-code-bridge`).
 Two install paths cover the two ways to use the bridge.
@@ -50,12 +50,12 @@ Two install paths cover the two ways to use the bridge.
 ### Library / CLI
 
 ```bash
-bun add claudecode-bridge          # or npm i, or pnpm add
+bun add @pablospe/claude-code-bridge          # or npm i, or pnpm add
 bunx ccb demo --supervisor=claude "what is 11 squared?"
 ```
 
 Exposed bins: `ccb`, `ccb-channel-server`, `ccb-hook-relay`, `ccb-launcher`.
-The library surface (`import { Bridge, ... } from "claudecode-bridge"`) is
+The library surface (`import { Bridge, ... } from "@pablospe/claude-code-bridge"`) is
 ESM-only; CJS consumers are not supported.
 
 ### Claude Code plugin (tool-event visibility out of the box)
@@ -65,7 +65,7 @@ install so claude's hook subsystem can spawn them without a shell PATH
 hunt:
 
 ```bash
-bun add -g claudecode-bridge
+bun add -g @pablospe/claude-code-bridge
 ```
 
 Then from inside a `claude` session:
@@ -110,8 +110,8 @@ Expected (UUIDs vary):
 The `--channels=dev-flag` mode skips the plugin path entirely so you can
 exercise the bridge against your local source without publishing. If a
 contributor specifically wants to exercise the plugin path during
-development, run `bun link claudecode-bridge` in the bridge checkout and
-`bun link --global claudecode-bridge` in the consumer scope; the plugin
+development, run `bun link @pablospe/claude-code-bridge` in the bridge checkout and
+`bun link --global @pablospe/claude-code-bridge` in the consumer scope; the plugin
 manifest references bin names, so PATH resolution finds the linked bins.
 
 For the full real-`claude` walkthrough — managed launch, plugin install,

@@ -1,4 +1,4 @@
-// Locked public surface for claudecode-bridge 0.1.0. Adding a symbol here is a
+// Locked public surface for @pablospe/claude-code-bridge 0.1.0. Adding a symbol here is a
 // minor bump; removing or renaming anything in this file is a major.
 
 export {

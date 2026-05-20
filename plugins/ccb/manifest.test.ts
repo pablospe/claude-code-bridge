@@ -58,7 +58,7 @@ describe("ccb plugin manifest", () => {
     const manifest = await readManifest();
     expect(typeof manifest.description).toBe("string");
     expect(manifest.description).toContain("bun add -g");
-    expect(manifest.description).toContain("claudecode-bridge");
+    expect(manifest.description).toContain("@pablospe/claude-code-bridge");
   });
 
   test("mcp server entry uses the bare bin name (no path, no bunx, no shell metachars)", async () => {

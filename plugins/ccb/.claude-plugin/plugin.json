@@ -1,7 +1,7 @@
 {
   "name": "ccb",
   "version": "0.1.0",
-  "description": "Bridge that drives interactive Claude Code sessions from external UIs via the channels MCP surface. Plugin users MUST first install the bin package globally: `bun add -g claudecode-bridge`. The plugin invokes `ccb-channel-server` and `ccb-hook-relay` by bare bin name; without the global install those bins are not on PATH and claude reports `command not found`. CCB_BRIDGE_ENDPOINT and CCB_SESSION_ID placeholders are populated at session start by the bridge.",
+  "description": "Bridge that drives interactive Claude Code sessions from external UIs via the channels MCP surface. Plugin users MUST first install the bin package globally: `bun add -g @pablospe/claude-code-bridge`. The plugin invokes `ccb-channel-server` and `ccb-hook-relay` by bare bin name; without the global install those bins are not on PATH and claude reports `command not found`. CCB_BRIDGE_ENDPOINT and CCB_SESSION_ID placeholders are populated at session start by the bridge.",
   "mcpServers": {
     "ccb": {
       "command": "ccb-channel-server",

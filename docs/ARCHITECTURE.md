@@ -185,7 +185,7 @@ process. The four packages that make up this surface:
 
 ## Published shape
 
-The npm package `claudecode-bridge` is the single publish artifact. It
+The npm package `@pablospe/claude-code-bridge` is the single publish artifact. It
 ships the bundled library entry (`dist/index.js`) with the locked 0.1.0
 public surface (`Bridge`, `BridgeEvent`, `JsonlEventStore`,
 `claudeCodeSupervisorFactory`, and the rest of the symbols listed in
@@ -196,7 +196,7 @@ a pre-existing CommonJS bin that ships verbatim; and the plugin manifest
 at `plugins/ccb/.claude-plugin/plugin.json` plus the marketplace
 declaration at `.claude-plugin/marketplace.json`, so a `git`-URL-based
 `/plugin marketplace add` works against the published GitHub repo AND
-the bins are on PATH after a one-time `bun add -g claudecode-bridge`.
+the bins are on PATH after a one-time `bun add -g @pablospe/claude-code-bridge`.
 Internal `@ccb/core`, `@ccb/mcp-channel`, `@ccb/claude-code`, and
 `@ccb/process` workspaces stay `"private": true` and are bundled into
 `dist/`; the public library surface is ESM-only.
