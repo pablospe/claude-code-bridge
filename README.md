@@ -7,27 +7,24 @@ A TypeScript library + CLI that lets external UIs and orchestrators drive an alr
 Channels for inbound general content; MCP tools for outbound. A consumer pushes a message in via a Claude Code channel (`notifications/claude/channel`); Claude responds by calling one of three MCP tools (`bridge_reply` / `bridge_progress` / `bridge_done`); every turn is persisted as an append-only JSONL event log.
 
 ```text
-        +----------------------+
-        |       Consumer       |
-        |  ccb serve, T3 Code, |
-        |      agtx, ...       |
-        +----------------------+
-           |                ^
-           | sendMessage()  | events(sessionId)
-           v                |
-        +----------------------+
-        |        Bridge        |
-        |   session state +    |
-        |      event log       |
-        +----------------------+
-           ||               ^^
-           || channels      || MCP tools
-           || (inbound)     || (outbound)
-           vv               ||
-        +----------------------+
-        |      Claude Code     |
-        |   claude + ccb plugin|
-        +----------------------+
+        +-------------------------------------------+
+        |                 Consumer                  |
+        |        ccb serve, T3 Code, agtx, ...      |
+        +-------------------------------------------+
+              |                          ^
+              | sendMessage()            | events(sessionId)
+              v                          |
+        +-------------------------------------------+
+        |                  Bridge                   |
+        |          session state + event log        |
+        +-------------------------------------------+
+              ||                         ^^
+              || channels (inbound)      || MCP tools (outbound)
+              vv                         ||
+        +-------------------------------------------+
+        |                Claude Code                |
+        |             claude + ccb plugin           |
+        +-------------------------------------------+
 ```
 
 This is not an ACP replacement and not a universal agent runtime. It exists for the specific case where you want an already-authenticated interactive `claude` to be the runtime.
@@ -36,7 +33,7 @@ See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full design, proces
 
 ## Install
 
-`bun ≥ 1.3` must be on PATH ([why Bun](#status--known-limitations)). The bridge publishes to npm as
+`bun ≥ 1.3` must be on PATH. The bridge publishes to npm as
 [`@pablospe/claude-code-bridge`](https://www.npmjs.com/package/@pablospe/claude-code-bridge)
 — scoped under the author's npm namespace. The GitHub repo name stays
 `claude-code-bridge`.
@@ -50,7 +47,7 @@ That puts four bins on your PATH: `ccb` (the CLI), `ccb-channel-server` and
 launcher; see [limitations](#status--known-limitations)).
 
 Then register the Claude Code plugin so a normal `claude` session connects
-back to the bridge automatically — including the M3 hook relay, so you get
+back to the bridge automatically — including the hook relay, so you get
 `tool.event` visibility out of the box:
 
 ```text
@@ -157,7 +154,7 @@ the linked bins.
 ## Status & known limitations
 
 What works today: the protocol shape end-to-end against an in-process mock;
-the M3 observational hook relay (`PreToolUse` / `PostToolUse` / `Stop`
+the observational hook relay (`PreToolUse` / `PostToolUse` / `Stop`
 surfaced as `tool.event` records, Pre/Post correlated by `tool_use_id`);
 the append-only JSONL event store; and managed launch (the bridge spawning
 `claude` itself via `node-pty`) **when run under Node**.
