@@ -70,20 +70,22 @@ account — see [`docs/SMOKE.md`](./docs/SMOKE.md) for that one-time step.
 The bridge is the *consumer side*; your `claude` session is the *runtime*.
 You drive claude from the bridge and watch the structured event stream.
 
-**Terminal 1 — the bridge.** It mints a session id and prints it; copy that.
+**Terminal 1 — the bridge.** It mints a session id and prints the exact
+command to run in the second terminal:
 
 ```bash
 ccb serve --endpoint 127.0.0.1:18484 --format pretty
-#   listening on 127.0.0.1:18484; session_id=4f3b6e10-…   ← copy this
+#   listening on 127.0.0.1:18484; session_id=4f3b6e10-…
+#   …
+#   in a second terminal, start claude with the ccb plugin installed:
+#     CCB_BRIDGE_ENDPOINT=127.0.0.1:18484 CCB_SESSION_ID=4f3b6e10-… claude
 ```
 
-**Terminal 2 — your claude, pointed at the same bridge.** The plugin reads
-these two env vars to dial back into the bridge:
+**Terminal 2 — your claude, pointed at the same bridge.** Paste the command
+`ccb serve` printed; the plugin reads those two env vars to dial back in:
 
 ```bash
-export CCB_BRIDGE_ENDPOINT=127.0.0.1:18484
-export CCB_SESSION_ID=4f3b6e10-…      # paste the id from Terminal 1
-claude
+CCB_BRIDGE_ENDPOINT=127.0.0.1:18484 CCB_SESSION_ID=4f3b6e10-… claude
 ```
 
 Now back in **Terminal 1**, type a prompt and press enter — it's pushed to

@@ -239,6 +239,14 @@ export async function runServe(opts: ServeOptions): Promise<void> {
   );
   stderrWrite(`bridge_uuid: ${sessionId}\n`);
   stderrWrite(`jsonl: ${join(opts.storeDir, `${sessionId}.jsonl`)}\n`);
+  // The channel server (the ccb plugin's MCP entry, or ccb-channel-server)
+  // reads these two env vars to dial back into this bridge. Print the exact
+  // command so the operator can paste it into a second terminal rather than
+  // hand-assemble the env from the lines above.
+  stderrWrite(
+    `\nin a second terminal, start claude with the ccb plugin installed:\n` +
+      `  CCB_BRIDGE_ENDPOINT=${bound.endpoint} CCB_SESSION_ID=${opts.sessionId} claude\n\n`,
+  );
 
   opts.onReady?.({
     endpoint: bound.endpoint,

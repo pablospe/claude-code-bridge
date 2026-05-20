@@ -182,6 +182,11 @@ test("runServe prints bridge_uuid and jsonl path to stderr at startup", async ()
   expect(joined).toMatch(/bridge_uuid: [0-9a-f-]{36}/i);
   expect(joined).toContain(`jsonl: ${storeDir}/`);
   expect(joined).toContain(".jsonl");
+  // The paste-ready second-terminal command carries the bound endpoint and
+  // the wire session id the channel server must match.
+  expect(joined).toMatch(
+    new RegExp(`CCB_BRIDGE_ENDPOINT=127\\.0\\.0\\.1:\\d+ CCB_SESSION_ID=${TEST_UUID} claude`),
+  );
 });
 
 test("runServe synthesizes crash event pair when the channel peer socket closes", async () => {
