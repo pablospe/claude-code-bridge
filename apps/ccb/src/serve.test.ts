@@ -229,9 +229,12 @@ test("runServe prints bridge_uuid and jsonl path to stderr at startup", async ()
   expect(joined).toMatch(
     new RegExp(`CCB_BRIDGE_ENDPOINT=127\\.0\\.0\\.1:\\d+ CCB_SESSION_ID=${TEST_UUID} claude`),
   );
+  // The dev-channels flag is what activates inbound channel delivery, so the
+  // printed command must include it (bare `claude` would never receive prompts).
+  expect(joined).toContain("--dangerously-load-development-channels server:ccb");
 });
 
-test("runServe synthesizes crash event pair when the channel peer socket closes", async () => {
+test("runServe synthesizes channel-disconnect event pair when the channel peer socket closes", async () => {
   const ac = new AbortController();
   const events: BridgeEvent[] = [];
   const ready = Promise.withResolvers<{ endpoint: string }>();
@@ -273,7 +276,11 @@ test("runServe synthesizes crash event pair when the channel peer socket closes"
   }
 
   const done = events.find((e) => e.type === "agent.done" && e.reason === "channel-disconnected");
-  const ended = events.find((e) => e.type === "session.ended" && e.reason === "supervisor crashed");
+  // A peer disconnect is not a crash from this supervisor's vantage point; the
+  // session.ended reason must be the neutral "channel disconnected".
+  const ended = events.find(
+    (e) => e.type === "session.ended" && e.reason === "channel disconnected",
+  );
   expect(done).toBeDefined();
   expect(ended).toBeDefined();
   // Ordering: agent.done lands before session.ended.
@@ -281,15 +288,49 @@ test("runServe synthesizes crash event pair when the channel peer socket closes"
     (e) => e.type === "agent.done" && e.reason === "channel-disconnected",
   );
   const endedIdx = events.findIndex(
-    (e) => e.type === "session.ended" && e.reason === "supervisor crashed",
+    (e) => e.type === "session.ended" && e.reason === "channel disconnected",
   );
   expect(endedIdx).toBeGreaterThan(doneIdx);
 
-  // runServe blocks on shutdown.promise; the bridge has already torn down the
-  // session via the supervisor-emitted session.ended path. Trigger the abort
-  // so runServe returns and the test exits.
+  // The peer-close synthesizes session.ended, which must tear runServe down on
+  // its own without an abort signal.
   ac.abort();
   await runPromise;
+});
+
+test("runServe resolves on peer disconnect without an abort signal", async () => {
+  const ready = Promise.withResolvers<{ endpoint: string }>();
+
+  // Deliberately omit `signal`: the only thing that should unblock runServe is
+  // the synthesized session.ended from the peer disconnect.
+  const runPromise = runServe({
+    endpoint: "127.0.0.1:0",
+    sessionId: TEST_UUID,
+    storeDir,
+    format: "pretty",
+    onReady: (info) => {
+      ready.resolve({ endpoint: info.endpoint });
+    },
+    stdout: () => undefined,
+    stderr: () => undefined,
+  });
+
+  const { endpoint } = await ready.promise;
+
+  const client = new ControlClient({
+    endpoint,
+    sessionId: TEST_UUID,
+    onDeliver: () => undefined,
+  });
+  await client.connect();
+  await client.close();
+
+  // Timeout guard: a regression that hangs after session.ended must fail loudly
+  // rather than stall the whole run.
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error("runServe did not resolve after peer disconnect")), 3000),
+  );
+  await Promise.race([runPromise, timeout]);
 });
 
 test("runServe writes session.ended to stdout on abort (Ctrl-C style)", async () => {

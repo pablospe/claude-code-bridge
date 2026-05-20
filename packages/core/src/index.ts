@@ -6,9 +6,12 @@ export {
 } from "./bridge.ts";
 export { EventBus } from "./bus.ts";
 export {
+  CHANNEL_DISCONNECTED_SESSION_REASON,
   CRASH_AGENT_DONE_REASON,
   CRASH_SESSION_ENDED_REASON,
+  emitChannelDisconnectEvents,
   emitCrashEvents,
+  synthesizeChannelDisconnectEvents,
   synthesizeCrashEvents,
 } from "./crash-events.ts";
 export type { BridgeEvent } from "./events.ts";

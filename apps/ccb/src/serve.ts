@@ -3,7 +3,7 @@ import {
   Bridge,
   type BridgeEvent,
   dispatchBridgeTool,
-  emitCrashEvents,
+  emitChannelDisconnectEvents,
   HookFanin,
   type Supervisor,
   type SupervisorContext,
@@ -159,14 +159,16 @@ class ServeSupervisor implements Supervisor {
   }
 
   /**
-   * Channel-server peer dropped its TCP control connection (crash, kill -9).
-   * Synthesize the crash event pair so the bridge transitions the session
-   * out of "open" and live consumers see the disconnect.
+   * Channel-server peer dropped its TCP control connection. This supervisor
+   * does not own the claude process; it only sees the TCP peer close, which is
+   * usually a clean exit, not a crash. Synthesize the neutral channel-disconnect
+   * pair so the bridge transitions the session out of "open" and live consumers
+   * see the disconnect without claiming a crash.
    */
   #handlePeerClose(): void {
     const ctx = this.#ctx;
     if (!ctx) return;
-    emitCrashEvents(ctx);
+    emitChannelDisconnectEvents(ctx);
   }
 }
 
@@ -241,6 +243,8 @@ export async function runServe(opts: ServeOptions): Promise<void> {
   // tick and would otherwise miss the head of the lifecycle.
   writeEvent({ type: "session.started", sessionId });
 
+  const shutdown = Promise.withResolvers<void>();
+
   const readerDone = Promise.withResolvers<void>();
   (async () => {
     try {
@@ -250,6 +254,11 @@ export async function runServe(opts: ServeOptions): Promise<void> {
       }
     } finally {
       readerDone.resolve();
+      // A session.ended observed from the event stream (e.g. the channel peer
+      // disconnected) must tear runServe down on its own. Otherwise the open
+      // stdin reader keeps the event loop alive and the process hangs after
+      // the session is gone.
+      shutdown.resolve();
     }
   })().catch(() => undefined);
 
@@ -262,9 +271,18 @@ export async function runServe(opts: ServeOptions): Promise<void> {
   // reads these two env vars to dial back into this bridge. Print the exact
   // command so the operator can paste it into a second terminal rather than
   // hand-assemble the env from the lines above.
+  //
+  // The --dangerously-load-development-channels flag is what activates inbound
+  // channel delivery; bare `claude` with only the plugin gets the outbound
+  // bridge tools + hooks but never receives injected prompts. The bridge MCP
+  // tools are pre-approved up front so no permission prompt interrupts the
+  // round-trip; both namespaces are listed because the plugin path resolves
+  // them as mcp__plugin_ccb_ccb__* while the dev-flag path resolves mcp__ccb__*.
   stderrWrite(
-    `\nin a second terminal, start claude with the ccb plugin installed:\n` +
-      `  CCB_BRIDGE_ENDPOINT=${bound.endpoint} CCB_SESSION_ID=${opts.sessionId} claude\n\n`,
+    `\nin a second terminal, start claude pointed at this bridge:\n` +
+      `  CCB_BRIDGE_ENDPOINT=${bound.endpoint} CCB_SESSION_ID=${opts.sessionId} claude \\\n` +
+      `    --dangerously-load-development-channels server:ccb \\\n` +
+      `    --allowed-tools "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done mcp__plugin_ccb_ccb__bridge_reply mcp__plugin_ccb_ccb__bridge_progress mcp__plugin_ccb_ccb__bridge_done"\n\n`,
   );
 
   opts.onReady?.({
@@ -277,7 +295,6 @@ export async function runServe(opts: ServeOptions): Promise<void> {
 
   const stdinReader = startStdinReader(inject, stderrWrite);
 
-  const shutdown = Promise.withResolvers<void>();
   const signal = opts.signal;
   const onAbort = (): void => {
     shutdown.resolve();
@@ -351,6 +368,14 @@ function startStdinReader(
       stopped = true;
       if (stdin && typeof stdin.off === "function") {
         stdin.off("data", onData);
+      }
+      // Release stdin so an open tty no longer keeps the Node event loop alive;
+      // without this the process hangs after the session ends.
+      if (stdin && typeof stdin.pause === "function") {
+        stdin.pause();
+      }
+      if (stdin && typeof stdin.unref === "function") {
+        stdin.unref();
       }
     },
   };
