@@ -9,7 +9,7 @@ Channels for inbound general content; MCP tools for outbound. A consumer pushes 
 ```text
         +----------------------+
         |       Consumer       |
-        |  ccb demo, T3 Code,  |
+        |  ccb serve, T3 Code, |
         |      agtx, ...       |
         +----------------------+
            |                ^
@@ -26,117 +26,162 @@ Channels for inbound general content; MCP tools for outbound. A consumer pushes 
            vv               ||
         +----------------------+
         |      Claude Code     |
-        |   claude --channels  |
-        |          ...         |
+        |   claude + ccb plugin|
         +----------------------+
 ```
 
-This is not an ACPX replacement and not a universal agent runtime. It exists for the specific case where you want an already-authenticated interactive `claude` to be the runtime.
+This is not an ACP replacement and not a universal agent runtime. It exists for the specific case where you want an already-authenticated interactive `claude` to be the runtime.
 
 See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full design, process topology, and a library-usage example.
 
-## Status
-
-The protocol shape works end-to-end against an in-process mock and against a real `claude` driven by the bridge's managed launch (the bridge spawns and supervises `claude` itself via `node-pty`; requires `node-pty` to build/load on the host). The earlier two-terminal manual smoke is preserved as a fallback for hosts where `node-pty` cannot load.
-
 ## Install
 
-`bun ≥ 1.3` must be on PATH. The bridge is published to npm as
+`bun ≥ 1.3` must be on PATH ([why Bun](#status--known-limitations)). The bridge publishes to npm as
 [`@pablospe/claude-code-bridge`](https://www.npmjs.com/package/@pablospe/claude-code-bridge)
-(unscoped; the unhyphenated `claude-code-bridge` is taken on npm by a
-different author — the GitHub repo name stays `claude-code-bridge`).
-Two install paths cover the two ways to use the bridge.
-
-### Library / CLI
-
-```bash
-bun add @pablospe/claude-code-bridge          # or npm i, or pnpm add
-bunx ccb demo --supervisor=claude "what is 11 squared?"
-```
-
-Exposed bins: `ccb`, `ccb-channel-server`, `ccb-hook-relay`, `ccb-launcher`.
-The library surface (`import { Bridge, ... } from "@pablospe/claude-code-bridge"`) is
-ESM-only; CJS consumers are not supported.
-
-### Claude Code plugin (tool-event visibility out of the box)
-
-The plugin manifest invokes bins by name and relies on a prior global
-install so claude's hook subsystem can spawn them without a shell PATH
-hunt:
+— scoped under the author's npm namespace. The GitHub repo name stays
+`claude-code-bridge`.
 
 ```bash
 bun add -g @pablospe/claude-code-bridge
 ```
 
-Then from inside a `claude` session:
+That puts four bins on your PATH: `ccb` (the CLI), `ccb-channel-server` and
+`ccb-hook-relay` (spawned by Claude Code), and `ccb-launcher` (a Node-side
+launcher; see [limitations](#status--known-limitations)).
+
+Then register the Claude Code plugin so a normal `claude` session connects
+back to the bridge automatically — including the M3 hook relay, so you get
+`tool.event` visibility out of the box:
 
 ```text
 /plugin marketplace add https://github.com/pablospe/claude-code-bridge
 /plugin install ccb@claude-code-bridge
 ```
 
-Without the global install, `ccb-channel-server` and `ccb-hook-relay` are
-not on PATH and claude reports `command not found` when it tries to spawn
-them. After install, every `claude` session registers the ccb MCP server
-AND the M3 hook relay automatically; consumers see `tool.event` records
-in the bridge event stream from the first turn — alongside `agent.reply`
-/ `agent.done`, with Pre/Post pairs correlated by `tool_use_id`. See
-[`docs/M3.md`](./docs/M3.md) for the design and
-[`docs/SMOKE.md`](./docs/SMOKE.md) for end-to-end verification.
+The global install is a hard prerequisite for the plugin: the manifest
+invokes `ccb-channel-server` / `ccb-hook-relay` by bare name, so without
+them on PATH claude reports `command not found`. The channels feature is a
+Claude Code research preview and must be enabled / allowlisted for your
+account — see [`docs/SMOKE.md`](./docs/SMOKE.md) for that one-time step.
 
-### Development (from a checkout)
+> **Not published yet?** Until the first npm release lands, install from a
+> source checkout instead — see [Development](#development). Everything
+> below works the same once the bins are on your PATH.
 
-For contributors hacking on the bridge itself:
+## Use it: two terminals
+
+The bridge is the *consumer side*; your `claude` session is the *runtime*.
+You drive claude from the bridge and watch the structured event stream.
+
+**Terminal 1 — the bridge.** It mints a session id and prints it; copy that.
+
+```bash
+ccb serve --endpoint 127.0.0.1:18484 --format pretty
+#   listening on 127.0.0.1:18484; session_id=4f3b6e10-…   ← copy this
+```
+
+**Terminal 2 — your claude, pointed at the same bridge.** The plugin reads
+these two env vars to dial back into the bridge:
+
+```bash
+export CCB_BRIDGE_ENDPOINT=127.0.0.1:18484
+export CCB_SESSION_ID=4f3b6e10-…      # paste the id from Terminal 1
+claude
+```
+
+Now back in **Terminal 1**, type a prompt and press enter — it's pushed to
+claude as a channel notification:
+
+```text
+what is 11 squared?
+```
+
+Terminal 1 streams the round-trip as structured events:
+
+```text
+[message.sent]  m1 "what is 11 squared?"
+[tool.event]    PreToolUse Bash "…"
+[tool.event]    PostToolUse Bash (12 B)
+[agent.reply final=true] "11 squared is 121."
+[agent.done]
+```
+
+(Need a session id without copy-paste? Bun is already installed:
+`bun -e 'console.log(crypto.randomUUID())'`, or use `uuidgen` if you have
+it, and pass the same value to `ccb serve --session-id` and
+`export CCB_SESSION_ID`.)
+
+For the full verified walkthrough — including enabling the channels
+preview and the alternative `ccb-launcher` flow — see
+[`docs/SMOKE.md`](./docs/SMOKE.md).
+
+### Did it install? (no claude needed)
+
+A mock supervisor runs the whole event pipeline in-process, with no real
+`claude` and no channels — handy as a smoke check:
+
+```bash
+ccb demo --supervisor=mock "what is 11 squared?"
+```
+
+```text
+[session.started] d91356a6-…
+[message.sent] 916c268f-… "what is 11 squared?"
+[agent.progress] "thinking"
+[agent.reply final=true] "echo: what is 11 squared?"
+[session.ended]
+```
+
+## Development
+
+From a source checkout — also the way to run the bridge before the npm
+package is published:
 
 ```bash
 git clone https://github.com/pablospe/claude-code-bridge
 cd claude-code-bridge
 bun install
 bun test
-bun apps/ccb/src/cli.ts demo "hello world"
-bun apps/ccb/src/cli.ts demo --supervisor=claude --channels=dev-flag "ping"
+# the CLI runs straight from source (no global install):
+bun apps/ccb/src/cli.ts demo --supervisor=mock "hello world"
 ```
 
-Expected (UUIDs vary):
+`--channels=dev-flag` exercises the real-claude channel surface without the
+plugin (uses `claude --dangerously-load-development-channels`), so you can
+test against your local source without publishing. To exercise the *plugin*
+path against local source, `bun link @pablospe/claude-code-bridge` in this
+checkout and `bun link --global @pablospe/claude-code-bridge` where you run
+claude; the plugin manifest references bin names, so PATH resolution finds
+the linked bins.
 
-```text
-[session.started] d91356a6-...
-[message.sent] 916c268f-... "hello world"
-[agent.progress] "thinking"
-[agent.reply final=true] "echo: hello world"
-[session.ended]
-```
+## Status & known limitations
 
-The `--channels=dev-flag` mode skips the plugin path entirely so you can
-exercise the bridge against your local source without publishing. If a
-contributor specifically wants to exercise the plugin path during
-development, run `bun link @pablospe/claude-code-bridge` in the bridge checkout and
-`bun link --global @pablospe/claude-code-bridge` in the consumer scope; the plugin
-manifest references bin names, so PATH resolution finds the linked bins.
+What works today: the protocol shape end-to-end against an in-process mock;
+the M3 observational hook relay (`PreToolUse` / `PostToolUse` / `Stop`
+surfaced as `tool.event` records, Pre/Post correlated by `tool_use_id`);
+the append-only JSONL event store; and managed launch (the bridge spawning
+`claude` itself via `node-pty`) **when run under Node**.
 
-For the full real-`claude` walkthrough — managed launch, plugin install,
-and the two-terminal manual fallback — see
+**Bun + managed launch is blocked.** `ccb demo --supervisor=claude` asks the
+bridge to spawn and supervise `claude` via `node-pty` in one process. Under
+Bun, node-pty's `onData` callback never fires
+([oven-sh/bun#25822](https://github.com/oven-sh/bun/issues/25822)), so that
+one-command managed launch times out. This is why the recommended real-claude
+path is the [two-terminal flow](#use-it-two-terminals) above (you launch
+claude yourself; nothing is spawned via node-pty under Bun) — and why the
+`ccb-launcher` bin exists as a Node-side launcher for the managed-launch
+shape. Pure-Node packaging that would remove the Bun dependency entirely is
+tracked on the project's `npx-runtime` branch.
+
+For the real-`claude` paths you need Claude Code v2.1.80+ authenticated,
+with the channels research preview enabled. See
 [`docs/SMOKE.md`](./docs/SMOKE.md).
-
-## Requirements
-
-- [Bun](https://bun.sh) `≥ 1.3` on PATH. The bridge spawns child
-  processes through Bun in some paths, and the published bins are
-  bundled with `bun build --target=node` (Node-shebanged) but the
-  runtime that spawns them — claude's hook subsystem, the user's shell —
-  still needs Bun resolvable for the install and dev paths above. Pure-
-  Node hosts are tracked separately (see the project's `npx-runtime`
-  branch).
-- For the real-`claude` path: Claude Code v2.1.80 or newer,
-  authenticated, with the channels research-preview enabled. See
-  [`docs/SMOKE.md`](./docs/SMOKE.md) for both the development-flag and
-  plugin-install paths.
 
 ## Where to go next
 
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — full design, process topology, library-usage example, and channel-direction nuance.
 - [`docs/CLI.md`](./docs/CLI.md) — `ccb` CLI command reference (`demo`, `mcp-config`, `serve`).
-- [`docs/SMOKE.md`](./docs/SMOKE.md) — real-`claude` verification procedure.
+- [`docs/SMOKE.md`](./docs/SMOKE.md) — real-`claude` verification procedure (plugin, dev-flag, and two-terminal launcher).
 - [`docs/ROADMAP.md`](./docs/ROADMAP.md) — milestones, planned work, and consumer-gated follow-ups.
 
 ## License
