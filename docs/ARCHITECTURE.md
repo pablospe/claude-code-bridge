@@ -36,6 +36,20 @@ Claude over two one-way pipes: channels carry inbound content into the session,
 MCP tools carry outbound content back. The channel-server process that physically
 implements those pipes is shown in the detailed diagram above.
 
+The Consumer and Bridge boxes are **roles, not required separate processes**.
+The Bridge is a library object (`Bridge` in `@ccb/core`); the Consumer is
+whatever code calls its `sendMessage()` / `events()` API. In the `ccb` CLI
+(`ccb serve`, `ccb demo`) the two are co-located in a single process — the
+CLI embeds the Bridge directly. The seam between them is an API boundary, not
+a network boundary: it exists so the Bridge stays reusable across consumers
+(CLI, an orchestrator, a future remote dashboard) behind a small, stable
+contract. A consumer that lives in another process or on another machine is a
+future HTTP/WS adapter, not something this shape requires today. The only
+boundary that is genuinely forced is **Bridge ↔ Claude**: `claude` is a
+separate binary, and the channel server is an MCP child that `claude` spawns
+and that dials back over the local control socket — so the channel server
+cannot be embedded in the bridge process (see "Process topology" below).
+
 
 ### Detailed diagram
 
