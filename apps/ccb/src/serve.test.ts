@@ -85,6 +85,48 @@ test("runServe routes bridge_reply tool calls through the bridge as agent.reply"
   await runPromise;
 });
 
+test("runServe prints channel-server connect and disconnect status to stderr", async () => {
+  const ac = new AbortController();
+  const stderrLines: string[] = [];
+  const ready = Promise.withResolvers<{ endpoint: string }>();
+
+  const runPromise = runServe({
+    endpoint: "127.0.0.1:0",
+    sessionId: TEST_UUID,
+    storeDir,
+    format: "pretty",
+    signal: ac.signal,
+    onReady: (info) => {
+      ready.resolve({ endpoint: info.endpoint });
+    },
+    stdout: () => undefined,
+    stderr: (line) => {
+      stderrLines.push(line);
+    },
+  });
+
+  const { endpoint } = await ready.promise;
+
+  const client = new ControlClient({ endpoint, sessionId: TEST_UUID, onDeliver: () => undefined });
+  await client.connect();
+
+  for (let i = 0; i < 50; i++) {
+    if (stderrLines.some((l) => l.includes("channel server connected"))) break;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  expect(stderrLines.join("")).toContain(`channel server connected; session ${TEST_UUID} is live`);
+
+  await client.close();
+  for (let i = 0; i < 50; i++) {
+    if (stderrLines.some((l) => l.includes("channel server disconnected"))) break;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  expect(stderrLines.join("")).toContain(`channel server disconnected (session ${TEST_UUID})`);
+
+  ac.abort();
+  await runPromise;
+});
+
 test("runServe.inject delivers user messages to the connected channel client", async () => {
   const ac = new AbortController();
   const ready = Promise.withResolvers<{

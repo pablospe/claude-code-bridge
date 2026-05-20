@@ -61,11 +61,14 @@ function parseEndpointSpec(spec: string): { host: string; port: number } {
  * `claude` itself; the human (or scripts/smoke-manual.sh) is responsible for
  * launching the claude process and pointing it at this endpoint.
  */
+type ChannelStatus = "connected" | "disconnected";
+
 class ServeSupervisor implements Supervisor {
   readonly #host: string;
   readonly #port: number;
   readonly #wireSessionId: string;
   readonly #onListening: (info: { host: string; port: number; endpoint: string }) => void;
+  readonly #onChannelStatus: ((status: ChannelStatus, sessionId: string) => void) | undefined;
   #server: ControlServer | undefined;
   #ctx: SupervisorContext | undefined;
   #hookFanin: HookFanin | undefined;
@@ -75,11 +78,13 @@ class ServeSupervisor implements Supervisor {
     port: number,
     wireSessionId: string,
     onListening: (info: { host: string; port: number; endpoint: string }) => void,
+    onChannelStatus?: (status: ChannelStatus, sessionId: string) => void,
   ) {
     this.#host = host;
     this.#port = port;
     this.#wireSessionId = wireSessionId;
     this.#onListening = onListening;
+    this.#onChannelStatus = onChannelStatus;
   }
 
   async start(ctx: SupervisorContext): Promise<void> {
@@ -102,10 +107,12 @@ class ServeSupervisor implements Supervisor {
       server.on("hello", (sid) => {
         if (sid !== wireId) return;
         this.#hookFanin?.onHello();
+        this.#onChannelStatus?.("connected", sid);
       });
       server.on("peer-close", (sid) => {
         if (sid !== wireId) return;
         this.#hookFanin?.onPeerClose();
+        this.#onChannelStatus?.("disconnected", sid);
         this.#handlePeerClose();
       });
       this.#onListening(info);
@@ -185,9 +192,21 @@ export async function runServe(opts: ServeOptions): Promise<void> {
     port: number;
   }>();
 
-  const supervisor = new ServeSupervisor(host, port, opts.sessionId, (info) => {
-    readyDeferred.resolve(info);
-  });
+  const supervisor = new ServeSupervisor(
+    host,
+    port,
+    opts.sessionId,
+    (info) => {
+      readyDeferred.resolve(info);
+    },
+    (status, sid) => {
+      stderrWrite(
+        status === "connected"
+          ? `channel server connected; session ${sid} is live\n`
+          : `channel server disconnected (session ${sid})\n`,
+      );
+    },
+  );
 
   const bridge = new Bridge({
     storeDir: opts.storeDir,

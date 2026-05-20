@@ -184,10 +184,11 @@ export function buildProgram(): Command {
   program
     .command("serve")
     .description("host the bridge control endpoint for a manual real-claude smoke session")
-    .requiredOption(
+    .option(
       "--endpoint <host:port>",
       "host:port to bind the bridge control endpoint",
       parseEndpointOption,
+      "127.0.0.1:18484",
     )
     .option("--session-id <id>", "session id to use (defaults to a random UUID)")
     .option("--store-dir <path>", "directory for per-session JSONL logs", ".ccb-data")
