@@ -454,6 +454,102 @@ test("Bun tty.ReadStream is replaced with a polling stream after launcher loads 
   expect((Patched as { name: string }).name).toBe("PollingPtyStream");
 });
 
+test("PollingPtyStream._write re-issues the write for a short write and flushes the whole chunk", async () => {
+  // Bun-only: the polling stream is installed in place of `tty.ReadStream`
+  // only under the Bun tty polyfill. Under Node the stock ReadStream is left
+  // untouched, so there is no PollingPtyStream to exercise.
+  const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
+  if (!isBun) return;
+
+  // Force a deterministic short write: the first `fs.write` against the
+  // stream's fd reports only PART of the requested bytes; the launcher must
+  // re-issue the write for the remaining tail (advancing the offset) and only
+  // invoke the write-callback once the full chunk is flushed. We mock
+  // `node:fs` so `write` records each call and short-writes the first one.
+  // `read` is a no-op: the stream's constructor starts a `_pump` loop, and a
+  // no-op read leaves no scheduled callback or timer, so the event loop drains
+  // cleanly instead of polling the inert fd forever.
+  const realFs = await import("node:fs");
+  const writeCalls: { offset: number; length: number }[] = [];
+  const delivered: string[] = [];
+  let firstWrite = true;
+  mock.module("node:fs", () => ({
+    ...realFs,
+    read: () => {
+      /* noop: stalls the _pump loop without keeping the event loop alive. */
+    },
+    write: (
+      _fd: number,
+      buffer: Buffer,
+      offset: number,
+      length: number,
+      _position: number | null,
+      cb: (err: Error | null, written: number) => void,
+    ) => {
+      writeCalls.push({ offset, length });
+      // First call: write only 3 of the requested bytes (short write).
+      const written = firstWrite ? 3 : length;
+      firstWrite = false;
+      // Copy the bytes the caller intended so we can assert delivery order.
+      delivered.push(buffer.subarray(offset, offset + written).toString("utf8"));
+      queueMicrotask(() => cb(null, written));
+    },
+  }));
+  // Stub node-pty so the fresh `launch()` below installs the Bun tty polyfill
+  // (which runs inside `loadNodePty`) without spawning a real child whose own
+  // `_pump` loop would keep the event loop alive.
+  mock.module("@homebridge/node-pty-prebuilt-multiarch", () => ({
+    spawn: () => ({
+      pid: 1,
+      write() {},
+      kill() {},
+      onData: () => ({ dispose() {} }),
+      onExit: () => ({ dispose() {} }),
+    }),
+  }));
+
+  try {
+    // Fresh import so the launcher binds the mocked `node:fs` write/read.
+    const fresh = await import(`./launcher.ts?shortwrite=${Date.now()}`);
+    // Trigger the Bun tty polyfill so `tty.ReadStream` becomes PollingPtyStream.
+    // The stubbed spawn returns immediately; the polyfill is installed inside
+    // `loadNodePty` before spawn runs, which is all this test needs.
+    fresh.launch("bash", ["-c", "true"]);
+    const tty = (await import("node:tty")) as unknown as {
+      ReadStream: new (fd: number) => import("node:stream").Duplex;
+    };
+    expect((tty.ReadStream as { name: string }).name).toBe("PollingPtyStream");
+
+    // fd 7 is never touched: `fs.read` is a no-op and the write path is fully
+    // under our mock, so no real descriptor is read or written.
+    const stream = new tty.ReadStream(7);
+    const payload = "hello-pty"; // 9 bytes; first write delivers 3.
+
+    const cbErr = await new Promise<Error | null | undefined>((resolve) => {
+      let resolved = false;
+      const done = (e?: Error | null) => {
+        if (resolved) return;
+        resolved = true;
+        resolve(e);
+      };
+      stream.write(payload, (e) => done(e ?? null));
+    });
+
+    expect(cbErr).toBeNull();
+    // Two writes: first short (3 bytes from offset 0), second the tail.
+    expect(writeCalls.length).toBe(2);
+    expect(writeCalls[0]).toEqual({ offset: 0, length: payload.length });
+    expect(writeCalls[1]).toEqual({ offset: 3, length: payload.length - 3 });
+    // Every byte of the payload arrived, in order, with no tail dropped.
+    expect(delivered.join("")).toBe(payload);
+
+    stream.destroy();
+  } finally {
+    mock.module("node:fs", () => realFs);
+    mock.module("@homebridge/node-pty-prebuilt-multiarch", () => fakeNodePty);
+  }
+});
+
 test("LauncherUnavailableError: thrown when node-pty fails to load", async () => {
   // Swap the mocked module to throw on access of `spawn`. Using a getter
   // simulates a require-time failure path.

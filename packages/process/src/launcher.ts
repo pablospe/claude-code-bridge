@@ -162,7 +162,25 @@ function ensureBunTtyPolyfill(): void {
       cb: (e?: Error | null) => void,
     ): void {
       const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
-      fsWrite(this._fd, data, 0, data.length, null, (err) => cb(err ?? null));
+      // A PTY master write can be short (fewer bytes than requested when the
+      // kernel buffer is near full). Re-issue `fs.write` for the un-written
+      // tail, advancing the offset, until the whole chunk is flushed; only
+      // then signal completion. Dropping the tail would lose bytes silently.
+      const writeFrom = (offset: number): void => {
+        fsWrite(this._fd, data, offset, data.length - offset, null, (err, written) => {
+          if (err) {
+            cb(err);
+            return;
+          }
+          const next = offset + written;
+          if (next < data.length) {
+            writeFrom(next);
+            return;
+          }
+          cb(null);
+        });
+      };
+      writeFrom(0);
     }
     override _destroy(err: Error | null, cb: (e?: Error | null) => void): void {
       cb(err);
