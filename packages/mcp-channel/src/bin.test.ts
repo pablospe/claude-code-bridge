@@ -3,6 +3,28 @@ import { ControlServer } from "./control.ts";
 
 const BIN_PATH = new URL("./bin.ts", import.meta.url).pathname;
 
+// Drives the MCP `initialize` handshake over the child's stdin, the way claude
+// does. The bin gates its bridge `hello` on this completing (`oninitialized`),
+// so tests that expect a hello must send it.
+async function completeMcpInitialize(child: Bun.Subprocess): Promise<void> {
+  const init = `${JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "bin-test", version: "1" },
+    },
+  })}\n`;
+  const initialized = `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`;
+  const stdin = child.stdin as { write: (s: string) => void; flush: () => Promise<number> };
+  stdin.write(init);
+  await stdin.flush();
+  stdin.write(initialized);
+  await stdin.flush();
+}
+
 async function findUnusedPort(): Promise<number> {
   const net = await import("node:net");
   return await new Promise<number>((resolve, reject) => {
@@ -140,6 +162,61 @@ test(
 );
 
 test(
+  "ccb-channel-server bin withholds bridge hello until claude completes MCP initialize",
+  async () => {
+    // Regression: the bin used to send `hello` as soon as its TCP control
+    // connection opened, i.e. before claude finished the MCP handshake and
+    // registered its channel-notification handler. The bridge would then
+    // deliver the first message into that window and claude would drop it
+    // (notifications mid-init are discarded, not queued). `hello` must wait
+    // for `oninitialized`. Settle disabled to isolate the gate from its margin.
+    const server = new ControlServer();
+    const info = await server.listen({ host: "127.0.0.1", port: 0 });
+
+    let helloSeen = false;
+    const helloPromise = new Promise<string>((resolve) => {
+      server.on("hello", (sessionId) => {
+        helloSeen = true;
+        resolve(sessionId);
+      });
+    });
+
+    const child = Bun.spawn({
+      cmd: ["bun", BIN_PATH],
+      env: {
+        ...process.env,
+        CCB_BRIDGE_ENDPOINT: info.endpoint,
+        CCB_SESSION_ID: "bin-gate-1",
+        CCB_CHANNEL_READY_SETTLE_MS: "0",
+      },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    try {
+      // Without an MCP initialize, hello must not fire.
+      await new Promise((r) => setTimeout(r, 800));
+      expect(helloSeen).toBe(false);
+
+      // Drive the handshake; now hello is allowed.
+      await completeMcpInitialize(child);
+      const sessionId = await Promise.race([
+        helloPromise,
+        new Promise<string>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("timed out waiting for hello after initialize")), 5000),
+        ),
+      ]);
+      expect(sessionId).toBe("bin-gate-1");
+    } finally {
+      if (!child.killed) child.kill("SIGKILL");
+      await server.close();
+    }
+  },
+  { timeout: 15_000 },
+);
+
+test(
   "ccb-channel-server bin connects via CCB_BRIDGE_ENDPOINT and completes hello handshake",
   async () => {
     const server = new ControlServer();
@@ -155,6 +232,7 @@ test(
         ...process.env,
         CCB_BRIDGE_ENDPOINT: info.endpoint,
         CCB_SESSION_ID: "bin-test-1",
+        CCB_CHANNEL_READY_SETTLE_MS: "0",
       },
       stdin: "pipe",
       stdout: "pipe",
@@ -162,6 +240,7 @@ test(
     });
 
     try {
+      await completeMcpInitialize(child);
       const sessionId = await Promise.race([
         helloPromise,
         new Promise<string>((_resolve, reject) =>

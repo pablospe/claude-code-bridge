@@ -274,11 +274,32 @@ describe("tarball smoke", () => {
           ...process.env,
           CCB_BRIDGE_ENDPOINT: `${endpoint.host}:${endpoint.port}`,
           CCB_SESSION_ID: sessionId,
+          // The bin gates hello on the MCP `initialize` handshake completing;
+          // disable the post-init settle so this wiring check stays inside 2s.
+          CCB_CHANNEL_READY_SETTLE_MS: "0",
         },
         stdio: ["pipe", "pipe", "pipe"],
       });
       const stderrChunks: Buffer[] = [];
       child.stderr.on("data", (c: Buffer) => stderrChunks.push(c));
+
+      // Drive the MCP initialize handshake the way claude does; the bin
+      // withholds its bridge hello until this completes.
+      child.stdin.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2024-11-05",
+            capabilities: {},
+            clientInfo: { name: "smoke", version: "1" },
+          },
+        })}\n`,
+      );
+      child.stdin.write(
+        `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`,
+      );
 
       try {
         const sid = await Promise.race([
@@ -299,8 +320,8 @@ describe("tarball smoke", () => {
         ]);
         expect(sid).toBe(sessionId);
       } finally {
-        // Channel server boots into MCP stdio mode after hello and would
-        // otherwise hang waiting for input. SIGTERM runs its bounded
+        // After hello the channel server stays live in MCP stdio mode and
+        // would otherwise hang waiting for input. SIGTERM runs its bounded
         // shutdown path.
         try {
           child.kill("SIGTERM");

@@ -7,6 +7,13 @@ import { drainWritable } from "./drain.ts";
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const SHUTDOWN_BUDGET_MS = 1_500;
 const DRAIN_TIMEOUT_MS = 200;
+// Settle window between claude's MCP `initialize` (observable via
+// `oninitialized`) and claude actually registering its channel-notification
+// handler (~tens of ms later, with no MCP signal). A channel notification
+// delivered inside this window is dropped, not queued, so we hold `hello` —
+// which gates the bridge's first delivery — for this long past `oninitialized`.
+// Overridable via CCB_CHANNEL_READY_SETTLE_MS (0 disables, for tests).
+const DEFAULT_CHANNEL_READY_SETTLE_MS = 500;
 
 async function drainStdout(): Promise<void> {
   // The MCP transport writes JSON-RPC frames to stdout. A bare process.exit
@@ -43,8 +50,14 @@ async function main(): Promise<void> {
 
   // controlClient is wired after handle so onTool can reference it.
   let controlClient: ControlClient | undefined;
+  // Resolves when claude completes the MCP `initialize` handshake. We gate the
+  // bridge `hello` on this so the first channel notification is never delivered
+  // before claude is ready to receive it (claude drops, rather than queues,
+  // notifications that arrive mid-handshake).
+  const initialized = Promise.withResolvers<void>();
   const handle = createChannelServer({
     sessionId,
+    onInitialized: () => initialized.resolve(),
     onTool: async (name, args) => {
       if (!controlClient) throw new Error("control client not initialized");
       await controlClient.sendTool(name, args);
@@ -100,31 +113,41 @@ async function main(): Promise<void> {
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
 
-  // Connect MCP stdio and TCP control IN PARALLEL.
+  // Connect ordering matters — three steps, in sequence:
   //
-  // Sequential ordering creates a real race window:
+  //   1. Attach the MCP stdio transport (handle.server.connect).
+  //   2. Wait for claude's MCP `initialize` handshake to complete (the
+  //      `initialized` promise, resolved from the server's `oninitialized`).
+  //   3. Only then dial the bridge control connection, which sends `hello`.
   //
-  // - If controlClient.connect() finishes first, its hello fires at the
-  //   bridge, the bridge's supervisor.start gate clears, and the consumer
-  //   may call bridge.sendMessage() before handle.server.connect(stdio) has
-  //   attached the MCP transport. The deliver flows
-  //   ControlServer.deliver -> onDeliver -> handle.deliver -> server.notification,
-  //   but the MCP SDK's Protocol uses `this._transport?.send()` — with no
-  //   transport, the call silently no-ops. The notification is lost and
-  //   claude never sees the message.
+  // `hello` is what clears the bridge's supervisor.start gate and lets the
+  // consumer deliver the first message. Each step guards a real race observed
+  // against claude:
   //
-  // - If handle.server.connect(stdio) finishes first under a slow boot, the
-  //   bridge waits longer for hello, which on a fast host can cross the
-  //   supervisor's startTimeoutMs.
+  // - The transport must attach before `hello` so a deliver isn't dropped:
+  //   the MCP SDK's Protocol uses `this._transport?.send()`, which silently
+  //   no-ops with no transport attached.
+  // - `hello` must wait for `initialized` because claude drops channel
+  //   notifications that arrive before it finishes initializing — delivering
+  //   at hello-time (pre-init) loses the message entirely.
   //
-  // Promise.all collapses the race to a few microseconds: the hello and the
-  // stdio attachment land effectively at the same time. The bridge-side
-  // ControlServer.deliver hello-gate (default 30s) covers any residual skew.
+  // The bridge-side ControlServer.deliver hello-gate (default 30s) and the
+  // connect timeout below bound the wait if claude never initializes.
   const stdio = new StdioServerTransport();
   let connectTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      Promise.all([controlClient.connect(), handle.server.connect(stdio)]),
+      (async () => {
+        const client = controlClient;
+        if (!client) throw new Error("control client not initialized");
+        await handle.server.connect(stdio);
+        await initialized.promise;
+        const settleMs = Number(
+          process.env.CCB_CHANNEL_READY_SETTLE_MS ?? DEFAULT_CHANNEL_READY_SETTLE_MS,
+        );
+        if (settleMs > 0) await new Promise((r) => setTimeout(r, settleMs));
+        await client.connect();
+      })(),
       new Promise<never>((_resolve, reject) => {
         connectTimer = setTimeout(
           () => reject(new Error(`connect timed out after ${connectTimeoutMs}ms`)),

@@ -39,6 +39,14 @@ export type OnToolCallback = (
 export interface CreateChannelServerOptions {
   readonly sessionId: string;
   readonly onTool?: OnToolCallback;
+  /**
+   * Invoked once claude completes the MCP `initialize` handshake (the SDK's
+   * `oninitialized`). Callers gate the bridge `hello` on this so the first
+   * channel notification is never delivered before claude has finished
+   * initializing — claude drops, rather than queues, notifications that arrive
+   * mid-handshake.
+   */
+  readonly onInitialized?: () => void;
 }
 
 export interface DeliverOptions {
@@ -120,7 +128,7 @@ function isToolName(name: string): name is ToolName {
 }
 
 export function createChannelServer(options: CreateChannelServerOptions): ChannelServerHandle {
-  const { sessionId, onTool } = options;
+  const { sessionId, onTool, onInitialized } = options;
 
   const server = new Server(
     { name: "ccb", version: "0.0.1" },
@@ -132,6 +140,10 @@ export function createChannelServer(options: CreateChannelServerOptions): Channe
       instructions: INSTRUCTIONS,
     },
   );
+
+  if (onInitialized) {
+    server.oninitialized = onInitialized;
+  }
 
   server.setRequestHandler(ListToolsRequestSchema, () => {
     return { tools: TOOLS.map((t) => ({ ...t })) };
