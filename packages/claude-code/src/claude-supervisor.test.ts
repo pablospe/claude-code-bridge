@@ -160,7 +160,6 @@ async function startWithFakeLauncher(opts: {
   autoConfirmInitialDelayMs?: number;
   autoConfirmRetryIntervalMs?: number;
   autoConfirmMaxAttempts?: number;
-  startTimeoutMs?: number;
   hooks?: { events: ReadonlyArray<"PreToolUse" | "PostToolUse" | "Stop"> };
 }): Promise<{
   supervisor: ClaudeCodeSupervisor;
@@ -182,7 +181,6 @@ async function startWithFakeLauncher(opts: {
     autoConfirmInitialDelayMs: opts.autoConfirmInitialDelayMs,
     autoConfirmRetryIntervalMs: opts.autoConfirmRetryIntervalMs,
     autoConfirmMaxAttempts: opts.autoConfirmMaxAttempts,
-    startTimeoutMs: opts.startTimeoutMs,
     hooks: opts.hooks,
     launcherFactory: factory,
   });
@@ -321,6 +319,25 @@ test("Bridge.startTimeoutMs aborts a hello-less start cleanly", async () => {
   // resolveExit() on it, but the bridge must have already torn the session
   // down -- subsequent events() for any uuid returns an empty iterable.
   expect(liveLaunchers.length).toBe(1);
+});
+
+test("start() rejects fast when claude exits before the channel hello", async () => {
+  // Regression: the hello-gate used to end only on `hello`, so a claude that
+  // died during boot (bad flag, crash, unconfirmed dev-channels gate) left
+  // start() blocked for the full Bridge.startTimeoutMs. start() must observe
+  // launcher.onExit and reject immediately with a precise error instead.
+  const factory = captureLauncherFactory();
+  const supervisor = new ClaudeCodeSupervisor({ channels: "dev-flag", launcherFactory: factory });
+  const ctx: SupervisorContext = { sessionId: FAKE_SESSION_ID, emit: () => {} };
+  const startPromise = supervisor.start(ctx);
+  // No ControlClient connects (no hello). Once the launcher exists, simulate
+  // claude exiting mid-boot.
+  await waitFor(() => liveLaunchers.length === 1);
+  const launcher = liveLaunchers[0];
+  if (!launcher) throw new Error("launcher was not created");
+  launcher.resolveExit({ code: 1, signal: "SIGTERM" });
+  await expect(startPromise).rejects.toThrow(/exited during boot before the channel connected/);
+  await supervisor.close(FAKE_SESSION_ID);
 });
 
 test("serverEndpoint exposes the bound ControlServer address after start, undefined before/after", async () => {

@@ -236,9 +236,11 @@ test(
     });
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toMatch(/^ccb-hook-relay:/m);
-    // Total wall-clock budget is 500ms; allow generous slack for subprocess
-    // startup overhead in CI (bun cold start).
-    expect(result.elapsedMs).toBeLessThan(5000);
+    // Relay budget is 500ms; the rest is subprocess (bun) cold-start, well
+    // under ~1s. 2500ms tolerates spawn variance while still failing if the
+    // 500ms cap regresses to multiple seconds (the loose 5000ms bound let a
+    // ~10x regression pass).
+    expect(result.elapsedMs).toBeLessThan(2500);
 
     for (const s of sockets) s.destroy();
     await new Promise<void>((r) => bare.close(() => r()));

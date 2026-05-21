@@ -74,9 +74,7 @@ interface Session {
   readonly pending: Set<Promise<void>>;
   /** Shared promise for an in-flight close so concurrent callers await it. */
   closingPromise?: Promise<void>;
-  /** Last store-append error message; consecutive matches count toward threshold. */
-  lastStoreError?: string;
-  /** Consecutive store.append failures of the same error message. */
+  /** Consecutive store.append failures; resets to 0 on the next success. */
   storeErrorCount: number;
   /** Once an agent.done store-error notice has fired, do not repeat it. */
   storeErrorNotified: boolean;
@@ -332,8 +330,7 @@ export class Bridge implements ClaudeCodeBridge {
     p.then(
       () => {
         // A successful append re-arms the latch so a future burst of failures
-        // can escalate again. lastStoreError is retained only for diagnostics.
-        session.lastStoreError = undefined;
+        // can escalate again.
         session.storeErrorCount = 0;
         session.storeErrorNotified = false;
       },
@@ -342,7 +339,6 @@ export class Bridge implements ClaudeCodeBridge {
         console.error(`Bridge: failed to persist event for session ${session.id}: ${msg}`);
         // Count consecutive failures regardless of message. A run of mixed
         // errors (EIO -> ENOSPC -> EIO) still escalates at the threshold.
-        session.lastStoreError = msg;
         session.storeErrorCount += 1;
         if (
           session.storeErrorCount >= STORE_ERROR_THRESHOLD &&

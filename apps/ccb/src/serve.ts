@@ -361,6 +361,10 @@ function startStdinReader(
 ): StdinReaderHandle {
   let stopped = false;
   let buffer = "";
+  // Serialize injects: inject() awaits a store append before delivering, so
+  // firing each line without chaining lets two quickly-entered lines race and
+  // reach claude out of input order. The chain preserves FIFO.
+  let pending: Promise<unknown> = Promise.resolve();
   const onData = (chunk: Buffer | string): void => {
     if (stopped) return;
     buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -369,9 +373,11 @@ function startStdinReader(
       const line = buffer.slice(0, nl).replace(/\r$/, "");
       buffer = buffer.slice(nl + 1);
       if (line.length > 0) {
-        inject(line).catch((err: unknown) => {
-          stderrWrite(`ccb: inject failed: ${String(err)}\n`);
-        });
+        pending = pending.then(() =>
+          inject(line).catch((err: unknown) => {
+            stderrWrite(`ccb: inject failed: ${String(err)}\n`);
+          }),
+        );
       }
       nl = buffer.indexOf("\n");
     }

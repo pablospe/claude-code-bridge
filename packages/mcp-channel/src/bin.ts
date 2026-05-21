@@ -142,9 +142,16 @@ async function main(): Promise<void> {
         if (!client) throw new Error("control client not initialized");
         await handle.server.connect(stdio);
         await initialized.promise;
-        const settleMs = Number(
+        const rawSettle = Number(
           process.env.CCB_CHANNEL_READY_SETTLE_MS ?? DEFAULT_CHANNEL_READY_SETTLE_MS,
         );
+        // Fall back to the default on a non-finite/negative override rather
+        // than silently disabling the settle (Number("abc") -> NaN, NaN > 0 is
+        // false), which would defeat the mid-init drop guard with no signal.
+        const settleMs =
+          Number.isFinite(rawSettle) && rawSettle >= 0
+            ? rawSettle
+            : DEFAULT_CHANNEL_READY_SETTLE_MS;
         if (settleMs > 0) await new Promise((r) => setTimeout(r, settleMs));
         await client.connect();
       })(),

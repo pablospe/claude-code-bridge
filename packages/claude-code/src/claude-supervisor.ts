@@ -75,12 +75,6 @@ export interface ClaudeCodeSupervisorOptions {
    * stray-empty-turn count bounded if claude already booted past the prompt.
    */
   readonly autoConfirmMaxAttempts?: number;
-  /**
-   * Reserved for symmetry with `Bridge.startTimeoutMs`. Currently unused at
-   * this layer because the supervisor itself does not block on a
-   * boot-completion signal; the bridge's timeout is the relevant one.
-   */
-  readonly startTimeoutMs?: number;
   /** Override the launcher (test seam). */
   readonly launcherFactory?: LauncherFactory;
   /** Override fs writeFile (test seam). */
@@ -451,13 +445,30 @@ export class ClaudeCodeSupervisor implements Supervisor {
    * truth for bounding this wait so the timeout story stays in one place.
    */
   #waitForChannelHello(sessionId: string, server: ControlServer): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      let disposeExit: (() => void) | undefined;
       const onHello = (sid: string): void => {
         if (sid !== sessionId) return;
         server.off("hello", onHello);
+        disposeExit?.();
         resolve();
       };
       server.on("hello", onHello);
+      // Fail fast if claude exits before the channel server connects (bad
+      // flag, crash, unconfirmed dev-channels gate). Without this the wait
+      // only ends on `hello`, so a boot that has already failed still blocks
+      // for the full Bridge.startTimeoutMs before the timeout path fires.
+      // Bridge.startSession runs supervisor.close() on this rejection.
+      disposeExit = this.#launcher?.onExit(({ code, signal }) => {
+        server.off("hello", onHello);
+        reject(
+          new Error(
+            `claude exited during boot before the channel connected (code=${code}${
+              signal ? `, signal=${signal}` : ""
+            })`,
+          ),
+        );
+      });
     });
   }
 
