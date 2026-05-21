@@ -158,19 +158,21 @@ the linked bins.
 What works today: the protocol shape end-to-end against an in-process mock;
 the observational hook relay (`PreToolUse` / `PostToolUse` / `Stop`
 surfaced as `tool.event` records, Pre/Post correlated by `tool_use_id`);
-the append-only JSONL event store; and managed launch (the bridge spawning
-`claude` itself via `node-pty`) **when run under Node**.
+the append-only JSONL event store; and the one-command managed launch (the
+bridge spawning `claude` itself via `node-pty`), which now works under **both
+Node and Bun**.
 
-**Bun + managed launch is blocked.** `ccb demo --supervisor=claude` asks the
-bridge to spawn and supervise `claude` via `node-pty` in one process. Under
-Bun, node-pty's `onData` callback never fires
-([oven-sh/bun#25822](https://github.com/oven-sh/bun/issues/25822)), so that
-one-command managed launch times out. This is why the recommended real-claude
-path is the [two-terminal flow](#use-it-two-terminals) above (you launch
-claude yourself; nothing is spawned via node-pty under Bun) — and why the
-`ccb-launcher` bin exists as a Node-side launcher for the managed-launch
-shape. Pure-Node packaging that would remove the Bun dependency entirely is
-tracked on the project's `npx-runtime` branch.
+**Bun + managed launch.** `ccb demo --supervisor=claude --channels=dev-flag`
+asks the bridge to spawn and supervise `claude` via `node-pty` in one process,
+and completes the full inbound/outbound round-trip on Bun. It used to time out
+because Bun's NAPI layer didn't fire node-pty's `onData`
+([oven-sh/bun#25822](https://github.com/oven-sh/bun/issues/25822)); a polling
+PTY polyfill in `@ccb/process` plus channel-ready gating in the channel server
+close that gap. The [two-terminal flow](#use-it-two-terminals) above remains
+the path for consumers that prefer to launch claude themselves, and the
+`ccb-launcher` bin is a pure-Node launcher/diagnostic for that shape.
+Pure-Node packaging that would remove the Bun dependency entirely is tracked on
+the project's `npx-runtime` branch.
 
 For the real-`claude` paths you need Claude Code v2.1.80+ authenticated,
 with the channels research preview enabled. See

@@ -198,11 +198,11 @@ Do not depend on this in CI without a PTY surrogate. The intent is to give a sin
 
 ## External launcher (ccb-launcher)
 
-`bin/ccb-launcher.cjs` (installed as the `ccb-launcher` bin) is a pure-Node companion that pairs with `ccb serve` to provide a working real-`claude` launcher on hosts where Bun's PTY layer can't drive `claude` directly. It spawns `claude` with the exact arg set `ClaudeCodeSupervisor` would generate, auto-confirms the dev-channels warning the same way the supervisor does, and tees every PTY byte to a log file. Running under Node sidesteps Bun's NAPI gap (the `node-pty` `onData` callback fires normally), so `claude` boots interactively and the channel server connects back to the bridge.
+`bin/ccb-launcher.cjs` (installed as the `ccb-launcher` bin) is a pure-Node companion that pairs with `ccb serve` to launch real `claude` without the bridge spawning it. It spawns `claude` with the exact arg set `ClaudeCodeSupervisor` would generate, auto-confirms the dev-channels warning the same way the supervisor does, and tees every PTY byte to a log file. Running under Node sidesteps Bun's NAPI gap (`node-pty`'s `onData` fires natively, no polyfill needed), so `claude` boots interactively and the channel server connects back to the bridge.
 
-The launcher is the supported real-`claude` driver on Bun-on-Linux until upstream Bun's NAPI completeness lands (`oven-sh/bun#25822`). See `docs/ARCHITECTURE.md` § "Choosing a supervisor" for the architectural framing.
+Managed launch (`ccb demo --supervisor=claude --channels=dev-flag`) now works on Bun-on-Linux too — a polling PTY polyfill in `@ccb/process` makes `onData` fire under Bun, and channel-ready gating keeps the first message from being delivered before claude is ready. See `docs/ARCHITECTURE.md` § "Choosing a supervisor" for the architectural framing.
 
-Use it as the everyday real-`claude` driver on Bun-on-Linux, OR as a diagnostic tool when managed launch (`ccb demo --supervisor=claude`) hangs at `supervisor.start timed out` or produces `agent.done reason=channel-disconnected` instead of a real reply.
+Reach for the launcher when you want an explicit, inspectable `serve` + external-launch split (the tee'd PTY log is handy), or as a diagnostic if managed launch ever regresses to `supervisor.start timed out` or `agent.done reason=channel-disconnected`.
 
 ### Setup
 
@@ -245,7 +245,7 @@ A successful run produces the canonical reply chain in the bridge log:
 
 ### Why the launcher exists
 
-`ClaudeCodeSupervisor` reads claude's PTY via `node-pty`'s `onData` callback. Under Bun on Linux at the time of writing, NAPI gaps prevent that callback from firing reliably — the supervisor can't observe what `claude` prints. `ccb-launcher` sidesteps Bun by spawning `claude` from a Node process where `node-pty`'s `onData` works, then logs every byte. The bridge itself (the `ccb serve` half above) still runs under Bun and exercises the production code path. See `docs/ARCHITECTURE.md` § "Choosing a supervisor" for the broader architectural story.
+`ClaudeCodeSupervisor` reads claude's PTY via `node-pty`'s `onData` callback. Bun's NAPI layer didn't fire that callback for the PTY master fd (`oven-sh/bun#25822`); `@ccb/process` now installs a polling polyfill so managed launch works under Bun directly. `ccb-launcher` predates the polyfill and remains useful as an explicit `serve` + external-launch split: it spawns `claude` from a plain Node process (where `onData` is native, no polyfill), tees every PTY byte to a log, and keeps the launch fully inspectable. The bridge itself (the `ccb serve` half above) runs under Bun and exercises the production code path either way. See `docs/ARCHITECTURE.md` § "Choosing a supervisor" for the broader architectural story.
 
 ### CLI options
 

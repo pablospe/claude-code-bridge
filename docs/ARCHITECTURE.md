@@ -232,37 +232,44 @@ contract — they differ only in who is responsible for spawning `claude`.
 own process orchestration (systemd, supervisord, a tmux session, a custom launcher,
 the `bin/ccb-launcher.cjs` harness) does not need it.
 
-### Today's working pattern on Bun-on-Linux
+### Managed launch on Bun-on-Linux
 
-On Bun-on-Linux the managed-launch path currently hits a bug downstream of the bridge
-itself — `claude`, spawned under Bun's PTY, doesn't reliably initialize its MCP child.
-The fix is in upstream Bun (tracked at oven-sh/bun#25822 + adjacent gaps). Until that
-lands, the supported real-`claude` pattern on Bun-on-Linux is **`ServeSupervisor` plus an
-external launcher**:
+The one-command managed launch
+(`ccb demo --supervisor=claude --channels=dev-flag`) works end-to-end on
+Bun-on-Linux: the bridge spawns `claude` under `node-pty`, auto-confirms the
+dev-channels dialog, the channel server dials back, and a delivered message
+round-trips to `agent.reply{final:true, content:"11 squared is 121."}`. Two
+things make it work:
 
-- **Bridge under Bun**:
-  `bun apps/ccb/src/cli.ts serve --endpoint 127.0.0.1:18486 --session-id <uuid> --format json`
-- **Claude spawned externally**:
-  - The Node diagnostic harness (`bin/ccb-launcher.cjs`) — the current
-    best Linux+Bun launcher; documented in [`SMOKE.md`](./SMOKE.md).
-  - A human in another terminal (the two-terminal manual procedure in
-    [`SMOKE.md`](./SMOKE.md)).
-  - Any process orchestrator that knows how to invoke
-    `claude --dangerously-load-development-channels server:ccb --mcp-config <file> ...`
-    with the right env vars.
+- **`node-pty` `onData` under Bun.** Bun's NAPI layer did not surface PTY
+  `onData` callbacks for the master fd (oven-sh/bun#25822), which `node-pty`
+  needs to emit its `data` events. `packages/process/src/launcher.ts` installs
+  a polling `Duplex` polyfill (`PollingPtyStream`) before `node-pty` loads, so
+  `onData` fires identically on Node and Bun.
+- **Channel-ready gating.** The channel server withholds its bridge `hello`
+  until `claude` finishes the MCP `initialize` handshake, plus a short settle
+  for the channel-handler registration that follows it (no MCP signal marks
+  that step). claude *drops*, rather than queues, channel notifications that
+  arrive mid-init, so without this gate the first delivered message was lost.
+  See `packages/mcp-channel/src/bin.ts`.
 
-This pattern is verified end-to-end: the bridge produces
-`agent.reply{final:true, content:"11 squared is 121."}` in its JSONL when paired with
-the harness. The protocol and library are sound; only the convenience layer is gated.
+Caveats: this rides the channels research preview via
+`--dangerously-load-development-channels` (dev-flag mode); the plugin-channel
+path does not deliver inbound (approval gate). The settle
+(`CCB_CHANNEL_READY_SETTLE_MS`, default 500ms) is a timing margin, not a hard
+handshake.
 
 ### Implication for consumers
 
-A third-party consumer (a UI, an orchestrator, an SDK user) writes against the `Bridge`
-library + `ServeSupervisor`. They do not need `ClaudeCodeSupervisor` at all — they just
-need to know how to launch `claude` with the bridge's MCP config, which the diagnostic
-harness demonstrates in about 200 lines of clear Node. Once Bun's NAPI gap closes,
-`ClaudeCodeSupervisor` becomes the one-command convenience again and any consumer that
-wants it can swap in `claudeCodeSupervisorFactory()` without changing protocol or events.
+`ClaudeCodeSupervisor` is the one-command convenience. A third-party consumer
+(a UI, an orchestrator, an SDK user) that owns its own process orchestration
+can instead write against the `Bridge` library + `ServeSupervisor` and launch
+`claude` itself — a human in another terminal, the `bin/ccb-launcher.cjs` Node
+harness, or any orchestrator that invokes
+`claude --dangerously-load-development-channels server:ccb --mcp-config <file> ...`
+with the right env vars. Both paths share the same wire protocol and
+`BridgeEvent` contract, so swapping `claudeCodeSupervisorFactory()` for
+`ServeSupervisor` (or back) changes neither.
 
 ## Channel direction notes
 
