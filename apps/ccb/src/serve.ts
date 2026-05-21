@@ -1,4 +1,7 @@
+import { rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { generateMcpConfig } from "@ccb/claude-code";
 import {
   Bridge,
   type BridgeEvent,
@@ -227,6 +230,21 @@ export async function runServe(opts: ServeOptions): Promise<void> {
   const sessionId = handleId;
   const bound = await readyDeferred.promise;
 
+  // Generate a per-session .mcp.json that defines a plain `ccb` server. The
+  // --dangerously-load-development-channels server:ccb flag loads the channel
+  // from THIS server entry; without it the dev flag has no `ccb` server and
+  // inbound delivery never arrives. The endpoint + wire session id live in the
+  // server's env so the channel server dials back here (no shell exports
+  // needed). The bare `ccb-channel-server` bin is on PATH after install.
+  const mcpConfigPath = join(tmpdir(), `ccb-serve-${opts.sessionId}.mcp.json`);
+  const mcpConfig = generateMcpConfig({
+    sessionId: opts.sessionId,
+    endpoint: bound.endpoint,
+    command: "ccb-channel-server",
+    args: [],
+  });
+  await writeFile(mcpConfigPath, `${JSON.stringify(mcpConfig, null, 2)}\n`);
+
   const inject = async (content: string): Promise<string> => {
     return bridge.sendMessage(sessionId, content);
   };
@@ -267,22 +285,21 @@ export async function runServe(opts: ServeOptions): Promise<void> {
   );
   stderrWrite(`bridge_uuid: ${sessionId}\n`);
   stderrWrite(`jsonl: ${join(opts.storeDir, `${sessionId}.jsonl`)}\n`);
-  // The channel server (the ccb plugin's MCP entry, or ccb-channel-server)
-  // reads these two env vars to dial back into this bridge. Print the exact
-  // command so the operator can paste it into a second terminal rather than
-  // hand-assemble the env from the lines above.
-  //
-  // The --dangerously-load-development-channels flag is what activates inbound
-  // channel delivery; bare `claude` with only the plugin gets the outbound
-  // bridge tools + hooks but never receives injected prompts. The bridge MCP
-  // tools are pre-approved up front so no permission prompt interrupts the
-  // round-trip; both namespaces are listed because the plugin path resolves
-  // them as mcp__plugin_ccb_ccb__* while the dev-flag path resolves mcp__ccb__*.
+  // Print the exact command so the operator can paste it into a second
+  // terminal. --dangerously-load-development-channels server:ccb activates
+  // inbound channel delivery by loading the channel from the `ccb` server
+  // defined in the generated --mcp-config; without that server entry the dev
+  // flag has no `ccb` server and inbound silently fails. (The plugin alone
+  // gives outbound tools + hooks but not inbound, because its server is
+  // namespaced mcp__plugin_ccb_ccb__* and does not satisfy `server:ccb`.) The
+  // endpoint + session id live in the mcp-config's env, so no shell exports are
+  // needed. The bridge MCP tools are pre-approved up front so no permission
+  // prompt interrupts the round-trip.
   stderrWrite(
     `\nin a second terminal, start claude pointed at this bridge:\n` +
-      `  CCB_BRIDGE_ENDPOINT=${bound.endpoint} CCB_SESSION_ID=${opts.sessionId} claude \\\n` +
-      `    --dangerously-load-development-channels server:ccb \\\n` +
-      `    --allowed-tools "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done mcp__plugin_ccb_ccb__bridge_reply mcp__plugin_ccb_ccb__bridge_progress mcp__plugin_ccb_ccb__bridge_done"\n\n`,
+      `  claude --dangerously-load-development-channels server:ccb \\\n` +
+      `    --mcp-config ${mcpConfigPath} \\\n` +
+      `    --allowed-tools "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done"\n\n`,
   );
 
   opts.onReady?.({
@@ -328,6 +345,8 @@ export async function runServe(opts: ServeOptions): Promise<void> {
     } catch (err) {
       stderrWrite(`ccb: bridge.close failed: ${String(err)}\n`);
     }
+    // Best-effort cleanup of the per-session mcp-config file.
+    await rm(mcpConfigPath, { force: true }).catch(() => undefined);
     await readerDone.promise;
   }
 }

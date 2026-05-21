@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BridgeEvent } from "@ccb/core";
@@ -199,6 +199,7 @@ test("runServe prints bridge_uuid and jsonl path to stderr at startup", async ()
   const ac = new AbortController();
   const stderrLines: string[] = [];
   const ready = Promise.withResolvers<void>();
+  const mcpConfigPath = join(tmpdir(), `ccb-serve-${TEST_UUID}.mcp.json`);
 
   const runPromise = runServe({
     endpoint: "127.0.0.1:0",
@@ -216,6 +217,10 @@ test("runServe prints bridge_uuid and jsonl path to stderr at startup", async ()
   });
 
   await ready.promise;
+
+  // The per-session mcp-config exists during the run and is removed on shutdown.
+  await access(mcpConfigPath);
+
   ac.abort();
   await runPromise;
 
@@ -224,14 +229,14 @@ test("runServe prints bridge_uuid and jsonl path to stderr at startup", async ()
   expect(joined).toMatch(/bridge_uuid: [0-9a-f-]{36}/i);
   expect(joined).toContain(`jsonl: ${storeDir}/`);
   expect(joined).toContain(".jsonl");
-  // The paste-ready second-terminal command carries the bound endpoint and
-  // the wire session id the channel server must match.
-  expect(joined).toMatch(
-    new RegExp(`CCB_BRIDGE_ENDPOINT=127\\.0\\.0\\.1:\\d+ CCB_SESSION_ID=${TEST_UUID} claude`),
-  );
-  // The dev-channels flag is what activates inbound channel delivery, so the
-  // printed command must include it (bare `claude` would never receive prompts).
-  expect(joined).toContain("--dangerously-load-development-channels server:ccb");
+  // The paste-ready second-terminal command loads the channel from the plain
+  // `ccb` server defined in the generated --mcp-config.
+  expect(joined).toContain("claude --dangerously-load-development-channels server:ccb");
+  expect(joined).toContain(`--mcp-config ${mcpConfigPath}`);
+  expect(joined).toContain('--allowed-tools "mcp__ccb__bridge_reply');
+
+  // The mcp-config file is cleaned up after shutdown.
+  await expect(access(mcpConfigPath)).rejects.toThrow();
 });
 
 test("runServe synthesizes channel-disconnect event pair when the channel peer socket closes", async () => {
