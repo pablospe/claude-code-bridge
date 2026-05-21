@@ -119,9 +119,11 @@ listening on 127.0.0.1:18484; session_id=<wire-uuid>; waiting for channel server
 
 Pressing Ctrl-C cleanly closes the bridge: it tears down the control server, drains in-flight store writes, and emits `[session.ended]`.
 
-## Installing as a plugin (no dev-flag warning)
+## Installing as a plugin (outbound + hooks only — see inbound caveat)
 
-The procedure above uses `--dangerously-load-development-channels server:ccb`, which works but prints a startup warning every time `claude` boots and requires a per-session `--mcp-config` file. The cleaner alternative is to install ccb as a Claude Code plugin from the local marketplace declared in this repo. Once installed and added to `allowedChannelPlugins`, the dev flag is no longer required.
+The procedure above uses `--dangerously-load-development-channels server:ccb`, which works but prints a startup warning every time `claude` boots and requires a per-session `--mcp-config` file. Installing ccb as a Claude Code plugin avoids the warning and gives you the **outbound** bridge tools (`bridge_reply` / `bridge_progress` / `bridge_done`) plus the **M3 hook relay** (`tool.event` records).
+
+> **Inbound does NOT work via the plugin path (verified 2026-05-21).** With the plugin, `claude --channels plugin:ccb@<marketplace>` reports `… · not on the approved channels allowlist` and silently drops inbound channel messages — even with the `allowedChannelPlugins` entry below correctly set. `allowedChannelPlugins` does **not** satisfy that approval check (an undocumented step or a research-preview limitation). So the plugin gives you tools + hooks, but **prompts injected into the bridge never reach claude**. For full bidirectional behaviour (inbound prompts AND outbound replies), use the `--mcp-config` + `--dangerously-load-development-channels server:ccb` path — that is what `ccb serve` prints, and it is the only path proven to round-trip end to end. See "Full bidirectional path" below.
 
 ### One-time install
 
@@ -133,6 +135,8 @@ The procedure above uses `--dangerously-load-development-channels server:ccb`, w
    ```
 
    The first command points at the repo root (substitute your own checkout path) where `.claude-plugin/marketplace.json` lives. The second installs the `ccb` plugin from that marketplace.
+
+   > **Marketplace rename caveat.** The marketplace registers under the `name` declared in `.claude-plugin/marketplace.json` (`claude-code-bridge`). If you installed under an older name (e.g. `ccb-local`), renaming the marketplace in the repo desyncs your local registration — `allowedChannelPlugins`, `enabledPlugins`, and `--channels plugin:ccb@<name>` will all still reference the stale name. Re-sync with `claude plugin marketplace remove <old-name>` then `claude plugin marketplace add <repo-path>` and `claude plugin install ccb@claude-code-bridge`, and update `allowedChannelPlugins` to the new name.
 
 2. Tell `claude` it is allowed to expose the channel by adding `allowedChannelPlugins` to `~/.claude/settings.json`:
 
@@ -159,8 +163,29 @@ Expected outcome:
 - The channel server is spawned by `claude` from the plugin manifest's `mcpServers.ccb` entry, which runs `bun ${CLAUDE_PROJECT_DIR}/packages/mcp-channel/src/bin.ts`.
 - The bridge (`scripts/smoke-manual.sh` in another terminal, `ccb serve` directly, or the managed-launch supervisor in the single-command path) still owns the control endpoint. The plugin manifest declares `CCB_BRIDGE_ENDPOINT` and `CCB_SESSION_ID` as env keys; the bridge populates them at session start by injecting overrides into the spawn.
 - All other gating still applies: `tengu_harbor` must be enabled server-side and channels must be available to your account (see "Channels availability gate" below).
+- **Outbound + hooks only.** Tool calls and `tool.event` records flow to the bridge, but inbound channel messages are rejected (`not on the approved channels allowlist`) — see the inbound caveat at the top of this section.
 
-The `--dangerously-load-development-channels server:ccb` path described above stays supported as a fallback for users who do not want to install the plugin.
+## Full bidirectional path (`--mcp-config` + dev flag)
+
+This is the only path proven to round-trip inbound prompts **and** outbound replies, and it is exactly what `ccb serve` prints on startup. `ccb serve` writes a per-session `.mcp.json` (defining a plain `ccb` server with `CCB_BRIDGE_ENDPOINT` / `CCB_SESSION_ID` baked in) and prints the matching `claude` command:
+
+```bash
+# Terminal 1
+ccb serve --session-id <uuid> --format pretty
+#   → copy the printed command, e.g.:
+
+# Terminal 2 (paste the printed command; --mcp-config path is per-session)
+claude --dangerously-load-development-channels server:ccb \
+  --mcp-config /tmp/ccb-serve-<uuid>.mcp.json \
+  --strict-mcp-config \
+  --allowed-tools "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done"
+```
+
+- The dev-channels **warning prompt is unavoidable** on this path (no flag suppresses it) — press `1` then Enter. `ccb-launcher` auto-confirms it for the headless variant.
+- `--dangerously-load-development-channels server:ccb` needs a plain `ccb` server, which comes from `--mcp-config`. A plugin's server is namespaced (`mcp__plugin_ccb_ccb__*`) and does **not** satisfy `server:ccb` — which is why the plugin path can't do inbound.
+- Use the `--mcp-config` path from the serve that is running **now**; serve removes the file on shutdown, so a stale path yields `server:ccb · no MCP server configured with that name`.
+
+The plugin path (above) stays useful for outbound + hooks without the warning; the `--mcp-config` path is the one to use for a full inbound/outbound demo.
 
 ## Scripted variant (best-effort)
 
