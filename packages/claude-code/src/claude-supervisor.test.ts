@@ -507,6 +507,27 @@ test("auto-confirm: hint substring matches even when claude renders ANSI CSI cod
   await supervisor.close(FAKE_SESSION_ID);
 });
 
+test("auto-confirm: hint matches when claude spaces words with absolute-column CSI codes", async () => {
+  // Verbatim form claude 2.1.146 actually emits: words separated by absolute
+  // column moves (`\x1b[9G`, `\x1b[12G`), NOT cursor-forward. normalizePty
+  // deletes these, so the rendered hint arrives as "Entertoconfirm" — the
+  // whitespace-insensitive compare is what makes the fast-path fire here.
+  // Blind fallback pushed far out so only the scanner path can satisfy this.
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
+    channels: "dev-flag",
+    autoConfirmInitialDelayMs: 5_000,
+    autoConfirmRetryIntervalMs: 5_000,
+  });
+  await startResult;
+  launcher.emitData(
+    "\x1b[3G\x1b[38;5;246m\x1b[3mEnter\x1b[9Gto\x1b[12Gconfirm\x1b[20G·\x1b[22GEsc\x1b[26Gto\x1b[29Gcancel\x1b[23m\x1b[39m\r\n",
+  );
+  await new Promise((r) => setTimeout(r, 20));
+  expect(launcher.writes).toContain("\r");
+  await helloClient.close();
+  await supervisor.close(FAKE_SESSION_ID);
+});
+
 test("auto-confirm: plugin mode never writes \\n even if the hint appears", async () => {
   const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
     channels: "plugin",

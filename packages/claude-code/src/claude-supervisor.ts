@@ -102,6 +102,13 @@ export interface ClaudeCodeSupervisorOptions {
  * blind-write fallback is the production safety net regardless.
  */
 const DEV_CHANNELS_CONFIRM_HINT = "Enter to confirm";
+// Whitespace-stripped form for matching. claude lays the dialog out with
+// absolute-column cursor codes (`Enter\x1b[9Gto\x1b[12Gconfirm`), which
+// normalizePty deletes — so the rendered hint arrives as "Entertoconfirm"
+// with no spaces. Comparing both sides whitespace-free is robust to whatever
+// positioning scheme claude uses, instead of guessing which CSI codes map to
+// spaces.
+const DEV_CHANNELS_CONFIRM_HINT_COMPACT = DEV_CHANNELS_CONFIRM_HINT.replace(/\s+/g, "");
 
 /**
  * Strip ANSI CSI escape sequences from a string so the hint-substring match
@@ -555,7 +562,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
       if (buffer.length > AUTO_CONFIRM_BUFFER_MAX) {
         buffer = buffer.slice(buffer.length - AUTO_CONFIRM_BUFFER_MAX);
       }
-      if (normalizePty(buffer).includes(DEV_CHANNELS_CONFIRM_HINT)) {
+      if (normalizePty(buffer).replace(/\s+/g, "").includes(DEV_CHANNELS_CONFIRM_HINT_COMPACT)) {
         fastPath();
       }
     });
