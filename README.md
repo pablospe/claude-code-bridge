@@ -70,23 +70,25 @@ account — see [`docs/SMOKE.md`](./docs/SMOKE.md) for that one-time step.
 The bridge is the *consumer side*; your `claude` session is the *runtime*.
 You drive claude from the bridge and watch the structured event stream.
 
-**Terminal 1 — the bridge.** It mints a session id and prints the exact
-command to run in the second terminal:
+**Terminal 1 — the bridge.** It mints a session id, writes a per-session
+MCP config, and prints the exact command to run in the second terminal:
 
 ```bash
 ccb serve --endpoint 127.0.0.1:18484 --format pretty
-#   listening on 127.0.0.1:18484; session_id=4f3b6e10-…
+#   listening on 127.0.0.1:18484
+#   bridge_uuid: 4f3b6e10-…
 #   …
-#   in a second terminal, start claude with the ccb plugin installed:
-#     CCB_BRIDGE_ENDPOINT=127.0.0.1:18484 CCB_SESSION_ID=4f3b6e10-… claude
+#   in a second terminal, start claude pointed at this bridge:
+#     claude --dangerously-load-development-channels server:ccb \
+#       --mcp-config /tmp/ccb-serve-4f3b6e10-….mcp.json \
+#       --allowed-tools "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done"
 ```
 
 **Terminal 2 — your claude, pointed at the same bridge.** Paste the command
-`ccb serve` printed; the plugin reads those two env vars to dial back in:
-
-```bash
-CCB_BRIDGE_ENDPOINT=127.0.0.1:18484 CCB_SESSION_ID=4f3b6e10-… claude
-```
+`ccb serve` printed. The dev-channels flag loads the `ccb` channel from the
+generated `--mcp-config` (whose env carries the endpoint + session id), which
+is what activates the *inbound* path — a plain plugin launch gives outbound
+tools + hooks only.
 
 Now back in **Terminal 1**, type a prompt and press enter — it's pushed to
 claude as a channel notification:

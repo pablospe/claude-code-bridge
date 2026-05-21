@@ -305,9 +305,11 @@ things that channels + the three bridge tools don't carry on their own:
 
 Claude Code hooks (`PreToolUse`, `PostToolUse`, `Stop`, `SessionStart`, `UserPromptSubmit`, ...)
 are the natural extension point for the first three. The `tool.event` variant of
-`BridgeEvent` in `packages/core/src/events.ts` is reserved for hook-relayed payloads — it is
-currently dead code waiting for a wire-up task. Hook relay is a roadmap item; see
-[ROADMAP.md](./ROADMAP.md).
+`BridgeEvent` (`packages/core/src/events.ts`) carries hook-relayed payloads, and the relay
+is shipped: `ccb-hook-relay` registers `PreToolUse`/`PostToolUse`/`Stop` hooks, forwards each
+as a hook frame over the control protocol, and `HookFanin` emits them as `tool.event` records
+(Pre/Post correlated by `tool_use_id`, fields truncated to a byte cap). Permission-prompt
+routing is the remaining roadmap item; see [ROADMAP.md](./ROADMAP.md).
 
 Token-level streaming is not on the roadmap. Every available path to it (the Agent SDK,
 `--print --output-format stream-json`) re-violates the bridge's non-goal of being the model

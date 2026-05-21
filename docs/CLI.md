@@ -54,10 +54,19 @@ Hosts the bridge control endpoint and streams its event log to stdout. The chann
 
 Flags:
 
-- `--endpoint <host:port>` (required)
+- `--endpoint <host:port>` (default `127.0.0.1:18484`)
 - `--session-id <id>` (defaults to a random UUID)
 - `--store-dir <path>` (default `.ccb-data`)
 - `--format <json|pretty>` (default `pretty`)
+
+## `ccb hooks-config`
+
+Emits a `settings.json` snippet that registers `ccb-hook-relay` for the requested hook events, so an unmanaged `claude` (the two-terminal / external-launcher path) relays `PreToolUse`/`PostToolUse`/`Stop` to the bridge as `tool.event` records. Before invoking `claude` with the snippet, export `CCB_BRIDGE_ENDPOINT` and `CCB_SESSION_ID` (the relay reads them at hook time). Writes to stdout unless `--out` is given.
+
+Flags:
+
+- `--events <list>` (comma-separated subset of `PreToolUse,PostToolUse,Stop`; default: all three)
+- `--out <path>` (write the JSON to this path instead of stdout)
 
 ## Where to go next
 
