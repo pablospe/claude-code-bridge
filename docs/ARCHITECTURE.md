@@ -278,6 +278,14 @@ goes server-to-claude only. There is no claude-to-server channel notification fo
 content; that direction uses regular MCP tools, which is why the bridge exposes
 `bridge_reply` / `bridge_progress` / `bridge_done` as the outbound surface.
 
+A turn ends when claude either sends `bridge_reply{final:true}` **or** calls `bridge_done`.
+`bridge_done` is not redundant — it is the *only* completion signal for a turn that produces
+no final reply (claude acted on the message but has nothing to say back). Consumers must
+therefore treat both as turn-terminal; otherwise such a turn would leave them waiting
+indefinitely. (`agent.done` is also what the bridge synthesizes, with a `reason`, on a
+supervisor crash or channel disconnect — so "turn ended" is one event type across clean and
+abnormal endings alike.)
+
 The channels reference also describes a permission-routing capability that is bidirectional but
 narrowly scoped: when Claude Code would normally show an in-terminal tool-approval prompt, an
 MCP server that opts into this capability can receive the prompt over a notification, present
