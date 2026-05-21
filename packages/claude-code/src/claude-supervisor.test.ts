@@ -394,6 +394,10 @@ test("start in dev-flag mode launches claude with the documented flag set", asyn
   expect(args).toContain("--mcp-config");
   expect(args).toContain("--add-dir");
   expect(args).toContain("--strict-mcp-config");
+  // Boot-trimming flags: skip the user-tier config + slash commands.
+  expect(args).toContain("--setting-sources");
+  expect(args[args.indexOf("--setting-sources") + 1]).toBe("project,local");
+  expect(args).toContain("--disable-slash-commands");
   expect(args).toContain("--allowed-tools");
   const toolsIdx = args.indexOf("--allowed-tools");
   expect(args[toolsIdx + 1]).toBe(
@@ -415,6 +419,10 @@ test("start in plugin mode replaces the dev flag with --channels plugin:ccb@clau
   expect(args).toContain("--channels");
   const idx = args.indexOf("--channels");
   expect(args[idx + 1]).toBe("plugin:ccb@claude-code-bridge");
+  // Plugin mode resolves the ccb plugin through the user-tier marketplace, so
+  // the dev-flag boot-trimming flags must NOT appear here (they'd break it).
+  expect(args).not.toContain("--setting-sources");
+  expect(args).not.toContain("--disable-slash-commands");
   await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });

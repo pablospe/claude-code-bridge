@@ -420,6 +420,16 @@ export class ClaudeCodeSupervisor implements Supervisor {
       args.push("--dangerously-load-development-channels", "server:ccb");
       args.push("--mcp-config", mcpConfigPath);
       args.push("--strict-mcp-config");
+      // Trim boot cost: skip the user-tier config (the operator's global
+      // plugins, MCP servers, and hooks) and the slash-command surface. A
+      // managed launch is a programmatic single-turn driver, not the user's
+      // interactive session, so none of that is needed and it dominates boot.
+      // Safe only in dev-flag mode: the channel comes from --mcp-config here,
+      // so dropping the user tier doesn't cut off the channel. (Plugin mode
+      // resolves the ccb plugin THROUGH the user-tier marketplace, so the same
+      // exclusion would break it — hence this stays out of the plugin branch.)
+      args.push("--setting-sources", "project,local");
+      args.push("--disable-slash-commands");
     } else {
       // Plugin mode: the channel server is declared by the plugin's
       // mcpServers entry, which claude loads from the plugin's manifest.

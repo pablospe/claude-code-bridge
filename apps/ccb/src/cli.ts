@@ -29,7 +29,14 @@ export interface SupervisorSelection {
  */
 export function selectSupervisorFactory(sel: SupervisorSelection): SupervisorFactory {
   if (sel.supervisor === "claude") {
-    return claudeCodeSupervisorFactory({ channels: sel.channels });
+    // Enable the per-session hook relay so the demo surfaces claude's tool
+    // calls as tool.event records. This rides the supervisor's own settings.json
+    // (--settings) rather than any globally-installed plugin, so it works for a
+    // fresh user and survives dev-flag's --setting-sources user-tier exclusion.
+    return claudeCodeSupervisorFactory({
+      channels: sel.channels,
+      hooks: { events: VALID_HOOK_EVENTS },
+    });
   }
   return mockSupervisorFactory();
 }
