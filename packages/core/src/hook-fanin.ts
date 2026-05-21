@@ -1,5 +1,6 @@
 import type { BridgeEvent } from "./events.ts";
-import { type SupervisorContext, truncateHookPayload } from "./supervisor.ts";
+import { truncateHookPayload } from "./hooks.ts";
+import type { SupervisorContext } from "./supervisor.ts";
 
 export interface HookFaninOptions {
   /**

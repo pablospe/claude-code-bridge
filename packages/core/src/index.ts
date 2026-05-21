@@ -20,13 +20,12 @@ export {
   type HookFaninMetrics,
   type HookFaninOptions,
 } from "./hook-fanin.ts";
+export { HOOK_MAX_FIELD_BYTES, truncateHookPayload } from "./hooks.ts";
 export { JsonlEventStore } from "./store.ts";
 export {
   dispatchBridgeTool,
-  HOOK_MAX_FIELD_BYTES,
   type Supervisor,
   type SupervisorContext,
-  truncateHookPayload,
 } from "./supervisor.ts";
 export type {
   ClaudeCodeBridge,

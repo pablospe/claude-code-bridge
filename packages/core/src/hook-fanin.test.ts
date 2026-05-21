@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import type { BridgeEvent } from "./events.ts";
 import { HookFanin } from "./hook-fanin.ts";
-import { HOOK_MAX_FIELD_BYTES, type SupervisorContext } from "./supervisor.ts";
+import { HOOK_MAX_FIELD_BYTES } from "./hooks.ts";
+import type { SupervisorContext } from "./supervisor.ts";
 
 function makeCtx(sessionId = "s1"): {
   ctx: SupervisorContext;

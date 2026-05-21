@@ -1,12 +1,7 @@
 import { expect, test } from "bun:test";
 import type { BridgeEvent } from "./events.ts";
-import {
-  dispatchBridgeTool,
-  HOOK_MAX_FIELD_BYTES,
-  type Supervisor,
-  type SupervisorContext,
-  truncateHookPayload,
-} from "./supervisor.ts";
+import { HOOK_MAX_FIELD_BYTES, truncateHookPayload } from "./hooks.ts";
+import { dispatchBridgeTool, type Supervisor, type SupervisorContext } from "./supervisor.ts";
 import type { ClaudeCodeBridge, SendOptions, StartSessionOptions } from "./types.ts";
 
 test("Supervisor can be implemented with the documented surface", async () => {
