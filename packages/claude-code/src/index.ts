@@ -17,3 +17,4 @@ export {
   type McpConfigOptions,
 } from "./config.ts";
 export { MockSupervisor, mockSupervisorFactory } from "./mock-supervisor.ts";
+export { type ChannelStatus, ServeSupervisor } from "./serve-supervisor.ts";
