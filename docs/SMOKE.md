@@ -177,7 +177,6 @@ ccb serve --session-id <uuid> --format pretty
 # Terminal 2 (paste the printed command; --mcp-config path is per-session)
 claude --dangerously-load-development-channels server:ccb \
   --mcp-config /tmp/ccb-serve-<uuid>.mcp.json \
-  --strict-mcp-config \
   --allowed-tools "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done"
 ```
 
