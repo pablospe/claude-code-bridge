@@ -43,35 +43,40 @@ See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full design, proces
 
 ## Install
 
-`bun ≥ 1.3` must be on PATH. The bridge publishes to npm as
-[`@pablospe/claude-code-bridge`](https://www.npmjs.com/package/@pablospe/claude-code-bridge)
-— scoped under the author's npm namespace. The GitHub repo name stays
-`claude-code-bridge`.
+**1.** Install the CLI globally (`bun ≥ 1.3` must be on PATH):
 
 ```bash
 > bun add -g @pablospe/claude-code-bridge
 ```
 
-That puts four bins on your PATH: `ccb` (the CLI), `ccb-channel-server` and
-`ccb-hook-relay` (spawned by Claude Code), and `ccb-launcher` (a Node-side
-launcher; see [limitations](#status--known-limitations)).
-
-### Register plugin inside Claude Code
-
-Then register the Claude Code plugin so a normal `claude` session connects
-back to the bridge automatically — including the hook relay, so you get
-`tool.event` visibility out of the box:
+**2.** Register the plugin inside a `claude` session:
 
 ```text
 /plugin marketplace add https://github.com/pablospe/claude-code-bridge
 /plugin install ccb@claude-code-bridge
 ```
 
-The global install is a hard prerequisite for the plugin: the manifest
-invokes `ccb-channel-server` / `ccb-hook-relay` by bare name, so without
-them on PATH claude reports `command not found`. The channels feature is a
-Claude Code research preview and must be enabled / allowlisted for your
-account — see [`docs/SMOKE.md`](./docs/SMOKE.md) for that one-time step.
+The plugin connects a normal `claude` session back to the bridge
+automatically — including the hook relay, so you get `tool.event` visibility
+out of the box.
+
+<details>
+<summary>What this installs / why order matters</summary>
+
+- **Four bins land on your PATH:** `ccb` (the CLI), `ccb-channel-server` and
+  `ccb-hook-relay` (spawned by Claude Code), and `ccb-launcher` (a Node-side
+  launcher; see [limitations](#status--known-limitations)).
+- **npm name:** published as
+  [`@pablospe/claude-code-bridge`](https://www.npmjs.com/package/@pablospe/claude-code-bridge),
+  scoped under the author's namespace; the GitHub repo name stays
+  `claude-code-bridge`.
+- **Global install must come first:** the plugin manifest invokes
+  `ccb-channel-server` / `ccb-hook-relay` by bare name, so without them on
+  PATH claude reports `command not found`.
+- **Channels is a research preview:** it must be enabled / allowlisted for
+  your account — see [`docs/SMOKE.md`](./docs/SMOKE.md) for that one-time step.
+
+</details>
 
 ## Usage: two terminals
 
