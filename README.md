@@ -31,6 +31,10 @@ This is not an ACP replacement and not a universal agent runtime. It exists for 
 
 See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full design, process topology, and a library-usage example.
 
+## Demo
+
+[![asciicast](https://asciinema.org/a/7WTXyawPGSikG5Em.svg)](https://asciinema.org/a/7WTXyawPGSikG5Em)
+
 ## Install
 
 `bun ≥ 1.3` must be on PATH. The bridge publishes to npm as
@@ -39,12 +43,14 @@ See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full design, proces
 `claude-code-bridge`.
 
 ```bash
-bun add -g @pablospe/claude-code-bridge
+> bun add -g @pablospe/claude-code-bridge
 ```
 
 That puts four bins on your PATH: `ccb` (the CLI), `ccb-channel-server` and
 `ccb-hook-relay` (spawned by Claude Code), and `ccb-launcher` (a Node-side
 launcher; see [limitations](#status--known-limitations)).
+
+### Register plugin inside Claude Code
 
 Then register the Claude Code plugin so a normal `claude` session connects
 back to the bridge automatically — including the hook relay, so you get
@@ -61,11 +67,7 @@ them on PATH claude reports `command not found`. The channels feature is a
 Claude Code research preview and must be enabled / allowlisted for your
 account — see [`docs/SMOKE.md`](./docs/SMOKE.md) for that one-time step.
 
-> **Not published yet?** Until the first npm release lands, install from a
-> source checkout instead — see [Development](#development). Everything
-> below works the same once the bins are on your PATH.
-
-## Use it: two terminals
+## Usage: two terminals
 
 The bridge is the *consumer side*; your `claude` session is the *runtime*.
 You drive claude from the bridge and watch the structured event stream.
@@ -74,7 +76,7 @@ You drive claude from the bridge and watch the structured event stream.
 MCP config, and prints the exact command to run in the second terminal:
 
 ```bash
-ccb serve --endpoint 127.0.0.1:18484 --format pretty
+ccb serve
 #   listening on 127.0.0.1:18484
 #   bridge_uuid: 4f3b6e10-…
 #   …
@@ -170,7 +172,7 @@ and completes the full inbound/outbound round-trip on Bun. It used to time out
 because Bun's NAPI layer didn't fire node-pty's `onData`
 ([oven-sh/bun#25822](https://github.com/oven-sh/bun/issues/25822)); a polling
 PTY polyfill in `@ccb/process` plus channel-ready gating in the channel server
-close that gap. The [two-terminal flow](#use-it-two-terminals) above remains
+close that gap. The [two-terminal flow](#usage-two-terminals) above remains
 the path for consumers that prefer to launch claude themselves, and the
 `ccb-launcher` bin is a pure-Node launcher/diagnostic for that shape.
 Pure-Node packaging that would remove the Bun dependency entirely is tracked on
