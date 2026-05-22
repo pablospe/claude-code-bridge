@@ -65,7 +65,7 @@ out of the box.
 
 - **Four bins land on your PATH:** `ccb` (the CLI), `ccb-channel-server` and
   `ccb-hook-relay` (spawned by Claude Code), and `ccb-launcher` (a Node-side
-  launcher; see [limitations](#status--known-limitations)).
+  launcher; see [limitations](#requirements--limitations)).
 - **npm name:** published as
   [`@pablospe/claude-code-bridge`](https://www.npmjs.com/package/@pablospe/claude-code-bridge),
   scoped under the author's namespace; the GitHub repo name stays
@@ -171,27 +171,21 @@ checkout and `bun link --global @pablospe/claude-code-bridge` where you run
 claude; the plugin manifest references bin names, so PATH resolution finds
 the linked bins.
 
-## Status & known limitations
+## Requirements & limitations
 
-What works today: the protocol shape end-to-end against an in-process mock;
-the observational hook relay (`PreToolUse` / `PostToolUse` / `Stop`
-surfaced as `tool.event` records, Pre/Post correlated by `tool_use_id`);
-the append-only JSONL event store; and the one-command managed launch (the
-bridge spawning `claude` itself via `node-pty`), which now works under **both
-Node and Bun**.
+The real-`claude` paths need **Claude Code v2.1.80+, authenticated, with the
+channels research preview enabled for your account**. The preview is gated
+server-side (the `tengu_harbor` flag) and isn't on for everyone yet — see
+[`docs/SMOKE.md`](./docs/SMOKE.md) for the availability diagnostics.
 
-**Managed launch.** `ccb demo --supervisor=claude` spawns and supervises
-`claude` via `node-pty` in one process and completes the full inbound/outbound
-round-trip under both Node and Bun. The [two-terminal flow](#usage-two-terminals)
-above remains available for consumers that prefer to launch `claude`
-themselves, with the `ccb-launcher` bin as a pure-Node launcher/diagnostic for
-that shape.
-
-The genuine constraints are on the Claude Code side, not the bridge: you need
-Claude Code v2.1.80+ authenticated with the channels research preview enabled,
-and inbound only works via the dev-flag/`--mcp-config` path (the plugin path is
-outbound + hooks only on individual accounts). See
-[`docs/SMOKE.md`](./docs/SMOKE.md).
+- **Inbound is dev-flag-only.** The full round-trip needs the
+  `--dangerously-load-development-channels` + `--mcp-config` path (what
+  `ccb serve` prints). The plugin path gives outbound tools + hooks but not
+  inbound on individual accounts.
+- **Managed launch needs `node-pty`.** `ccb demo --supervisor=claude` spawns
+  `claude` via `node-pty` (works under both Node and Bun); if `node-pty`
+  can't load on the host, use the [two-terminal flow](#usage-two-terminals)
+  or the `ccb-launcher` bin instead.
 
 ## Where to go next
 
