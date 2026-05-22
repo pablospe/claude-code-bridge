@@ -166,20 +166,17 @@ the append-only JSONL event store; and the one-command managed launch (the
 bridge spawning `claude` itself via `node-pty`), which now works under **both
 Node and Bun**.
 
-**Bun + managed launch.** `ccb demo --supervisor=claude --channels=dev-flag`
-asks the bridge to spawn and supervise `claude` via `node-pty` in one process,
-and completes the full inbound/outbound round-trip on Bun. It used to time out
-because Bun's NAPI layer didn't fire node-pty's `onData`
-([oven-sh/bun#25822](https://github.com/oven-sh/bun/issues/25822)); a polling
-PTY polyfill in `@ccb/process` plus channel-ready gating in the channel server
-close that gap. The [two-terminal flow](#usage-two-terminals) above remains
-the path for consumers that prefer to launch claude themselves, and the
-`ccb-launcher` bin is a pure-Node launcher/diagnostic for that shape.
-Pure-Node packaging that would remove the Bun dependency entirely is tracked on
-the project's `npx-runtime` branch.
+**Managed launch.** `ccb demo --supervisor=claude` spawns and supervises
+`claude` via `node-pty` in one process and completes the full inbound/outbound
+round-trip under both Node and Bun. The [two-terminal flow](#usage-two-terminals)
+above remains available for consumers that prefer to launch `claude`
+themselves, with the `ccb-launcher` bin as a pure-Node launcher/diagnostic for
+that shape.
 
-For the real-`claude` paths you need Claude Code v2.1.80+ authenticated,
-with the channels research preview enabled. See
+The genuine constraints are on the Claude Code side, not the bridge: you need
+Claude Code v2.1.80+ authenticated with the channels research preview enabled,
+and inbound only works via the dev-flag/`--mcp-config` path (the plugin path is
+outbound + hooks only on individual accounts). See
 [`docs/SMOKE.md`](./docs/SMOKE.md).
 
 ## Where to go next
