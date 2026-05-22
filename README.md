@@ -132,7 +132,7 @@ Terminal 1 streams the round-trip as structured events:
 For the full verified walkthrough — including enabling the channels preview
 and the alternative `ccb-launcher` flow — see [`docs/SMOKE.md`](./docs/SMOKE.md).
 
-### Did it install? (no claude needed)
+## Did it install? (no claude needed)
 
 A mock supervisor runs the whole event pipeline in-process, with no real
 `claude` and no channels — handy as a smoke check:
