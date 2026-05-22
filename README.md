@@ -33,7 +33,13 @@ See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full design, proces
 
 ## Demo
 
-[![asciicast](https://asciinema.org/a/7WTXyawPGSikG5Em.svg)](https://asciinema.org/a/7WTXyawPGSikG5Em)
+<a href="https://asciinema.org/a/7WTXyawPGSikG5Em" target="_blank" rel="noopener noreferrer">
+  <img width="2023" height="1098" alt="demo" src="https://github.com/user-attachments/assets/08285bfb-e362-4349-b439-ebf93f93ab23" />
+</a>
+
+## Screnshot
+
+<img width="2603" height="673" alt="ccb demo" src="https://github.com/user-attachments/assets/95b36996-9adc-49c0-bba9-ad020fe18873" />
 
 ## Install
 
