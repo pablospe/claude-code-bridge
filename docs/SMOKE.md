@@ -79,7 +79,7 @@ The script honors these environment overrides:
 
 ### Terminal 2 — start claude
 
-Copy the exact `claude` command the script printed and run it. `claude` will spawn `bunx ccb-channel-server` as a stdio child, the channel server will dial `127.0.0.1:18484`, and the `ControlServer` in Terminal 1 will accept the hello.
+Copy the exact `claude` command the script printed and run it. `claude` will spawn the channel server defined in the generated `.mcp.json` (the script wires it to `bun <repo>/packages/mcp-channel/src/bin.ts`) as a stdio child, the channel server will dial `127.0.0.1:18484`, and the `ControlServer` in Terminal 1 will accept the hello.
 
 By default, `claude` will prompt for permission the first time the bridge calls a tool (`bridge_reply`, `bridge_progress`, or `bridge_done`). To skip those prompts narrowly, append the `--allowed-tools` flag the script suggests:
 
@@ -95,7 +95,7 @@ Inside `claude`, ask something that exercises the bridge tools. The channel serv
 
 ### Terminal 1 (after claude is up) — exercise the inbound channel
 
-Switch back to Terminal 1 (the one running `ccb serve`). With `claude` running in Terminal 2 and the channel server connected, type a line of text in Terminal 1 and press enter. The bridge reads stdin line-by-line and forwards each line through the control connection as a `notifications/claude/channel` envelope. Without this step the smoke only exercises the outbound (`bridge_reply` / `bridge_progress` / `bridge_done`) half.
+Switch back to Terminal 1 (the one hosting the bridge). With `claude` running in Terminal 2 and the channel server connected, type a line of text in Terminal 1 and press enter. The bridge reads stdin line-by-line and forwards each line through the control connection as a `notifications/claude/channel` envelope. Without this step the smoke only exercises the outbound (`bridge_reply` / `bridge_progress` / `bridge_done`) half.
 
 ### Terminal 3 (optional) — inspect the JSONL log
 
@@ -132,7 +132,7 @@ The procedure above uses `--dangerously-load-development-channels server:ccb`, w
 1. Start a `claude` session anywhere and run these slash commands:
 
    ```
-   /plugin marketplace add /home/pablo/code/claude-code-bridge
+   /plugin marketplace add /path/to/claude-code-bridge
    /plugin install ccb@claude-code-bridge
    ```
 
@@ -162,7 +162,7 @@ claude --channels plugin:ccb@claude-code-bridge \
 Expected outcome:
 
 - No `--dangerously-load-development-channels` flag and no startup warning prompt about loading development channels.
-- The channel server is spawned by `claude` from the plugin manifest's `mcpServers.ccb` entry, which runs `bun ${CLAUDE_PROJECT_DIR}/packages/mcp-channel/src/bin.ts`.
+- The channel server is spawned by `claude` from the plugin manifest's `mcpServers.ccb` entry, which runs the bare bin `ccb-channel-server` (requires a prior `bun add -g @pablospe/claude-code-bridge` to put it on PATH).
 - The bridge (`scripts/smoke-manual.sh` in another terminal, `ccb serve` directly, or the managed-launch supervisor in the single-command path) still owns the control endpoint. The plugin manifest declares `CCB_BRIDGE_ENDPOINT` and `CCB_SESSION_ID` as env keys; the bridge populates them at session start by injecting overrides into the spawn.
 - All other gating still applies: `tengu_harbor` must be enabled server-side and channels must be available to your account (see "Channels availability gate" below).
 - **Outbound + hooks only.** Tool calls and `tool.event` records flow to the bridge, but inbound channel messages are rejected (`not on the approved channels allowlist`) — see the inbound caveat at the top of this section.
@@ -383,7 +383,7 @@ for `tool.event` records interleaved with `agent.reply` / `agent.done`.
 ### Programmatic: gated end-to-end test
 
 ```bash
-CCB_RUN_PLUGIN_SMOKE=1 bun test scripts/smoke-plugin-install.ts
+CCB_RUN_PLUGIN_SMOKE=1 bun test packages/claude-code/src/claude-supervisor.plugin-install.integration.test.ts
 ```
 
 The gated test (delivered by M4.5) builds the tarball, installs it into
