@@ -80,11 +80,11 @@ out of the box.
 
 ## Usage: two terminals
 
-The bridge is the *consumer side*; your `claude` session is the *runtime*.
-You drive claude from the bridge and watch the structured event stream.
+The bridge is the *consumer side*; your `claude` session is the *runtime* —
+you drive claude from the bridge and watch the structured event stream.
 
-**Terminal 1 — the bridge.** It mints a session id, writes a per-session
-MCP config, and prints the exact command to run in the second terminal:
+**1.** Start the bridge (**Terminal 1**). It mints a session id, writes a
+per-session MCP config, and prints the exact `claude` command for terminal 2:
 
 ```bash
 ccb serve
@@ -97,14 +97,10 @@ ccb serve
 #       --allowed-tools "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done"
 ```
 
-**Terminal 2 — your claude, pointed at the same bridge.** Paste the command
-`ccb serve` printed. The dev-channels flag loads the `ccb` channel from the
-generated `--mcp-config` (whose env carries the endpoint + session id), which
-is what activates the *inbound* path — a plain plugin launch gives outbound
-tools + hooks only.
+**2.** Start claude (**Terminal 2**). Paste the command `ccb serve` printed.
 
-Now back in **Terminal 1**, type a prompt and press enter — it's pushed to
-claude as a channel notification:
+**3.** Send a prompt (back in **Terminal 1**) — it's pushed to claude as a
+channel notification:
 
 ```text
 what is 11 squared?
@@ -120,14 +116,21 @@ Terminal 1 streams the round-trip as structured events:
 [agent.done]
 ```
 
-(Need a session id without copy-paste? Bun is already installed:
-`bun -e 'console.log(crypto.randomUUID())'`, or use `uuidgen` if you have
-it, and pass the same value to `ccb serve --session-id` and
-`export CCB_SESSION_ID`.)
+<details>
+<summary>Why the pasted command matters / session-id tips</summary>
 
-For the full verified walkthrough — including enabling the channels
-preview and the alternative `ccb-launcher` flow — see
-[`docs/SMOKE.md`](./docs/SMOKE.md).
+- **The dev-channels flag is what enables inbound.** It loads the `ccb`
+  channel from the generated `--mcp-config` (whose env carries the endpoint +
+  session id); a plain plugin launch gives outbound tools + hooks only.
+- **Need a session id without copy-paste?** Bun is already installed:
+  `bun -e 'console.log(crypto.randomUUID())'`, or use `uuidgen` if you have it,
+  and pass the same value to `ccb serve --session-id` and
+  `export CCB_SESSION_ID`.
+
+</details>
+
+For the full verified walkthrough — including enabling the channels preview
+and the alternative `ccb-launcher` flow — see [`docs/SMOKE.md`](./docs/SMOKE.md).
 
 ### Did it install? (no claude needed)
 
