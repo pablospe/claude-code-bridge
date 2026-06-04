@@ -62,6 +62,7 @@
       "dependencies": {
         "@ccb/claude-code": "workspace:*",
         "@ccb/core": "workspace:*",
+        "@ccb/process": "workspace:*",
       },
     },
     "packages/process": {
