@@ -1,0 +1,33 @@
+{
+  "_comment": "ISOLATED test config for L6 (OpenClaw gateway loads the claude-bridge plugin). Used only with OPENCLAW_STATE_DIR/OPENCLAW_HOME/OPENCLAW_CONFIG_PATH pointing at throwaway dirs — never the live ~/.openclaw. See run-l6-smoke.sh.",
+  "plugins": {
+    "enabled": true,
+    "load": {
+      "paths": ["/home/pablo/code/ccb-openclaw-acp/packages/openclaw-acp"]
+    },
+    "entries": {
+      "claude-bridge": { "enabled": true }
+    }
+  },
+  "acp": {
+    "enabled": true,
+    "dispatch": { "enabled": true },
+    "backend": "claude-bridge",
+    "defaultAgent": "main",
+    "allowedAgents": ["main"]
+  },
+  "agents": {
+    "defaults": { "sandbox": { "mode": "off" } },
+    "list": [
+      {
+        "id": "main",
+        "default": true,
+        "sandbox": { "mode": "off" },
+        "runtime": {
+          "type": "acp",
+          "acp": { "agent": "main", "backend": "claude-bridge", "mode": "persistent" }
+        }
+      }
+    ]
+  }
+}
