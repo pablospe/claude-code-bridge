@@ -41,7 +41,8 @@ OpenClaw gateway ──ACP──▶ this plugin (backend id "claude-bridge")
 | L4 | adapter ⇄ ccb mock supervisor end-to-end | ✅ |
 | L5 | adapter ⇄ **real `claude`** (managed launch, Max login) | ✅ replied "121" |
 | —  | Node bundle + `node` smoke (ships under Node) | ✅ |
-| L6 | OpenClaw gateway loads plugin + routes a turn | ⏳ turnkey (`l6/`) |
+| L6a | real OpenClaw gateway (built from source) loads the plugin + registers backend `claude-bridge` | ✅ gateway log |
+| L6b | a turn dispatches to the backend | ⏳ needs an ACP **channel binding** (config below) |
 
 Run the suite:
 
@@ -61,5 +62,20 @@ The one heavy/gated prerequisite is building the openclaw checkout
 deps on your primary checkout.
 
 Production wiring is config-only on the OpenClaw side: point `plugins.load.paths`
-at this package, set `acp.backend: "claude-bridge"`, and run the driving agent
-**non-sandboxed** (OpenClaw denies ACP for sandboxed agents).
+at this package, set `acp.backend: "claude-bridge"`, run the driving agent
+**non-sandboxed** (OpenClaw denies ACP for sandboxed agents), and — crucially —
+add an **ACP channel binding** so incoming messages initialize an ACP session and
+dispatch to the backend (a turn only routes to ACP once `acpManager.resolveSession`
+is `ready`, which a binding's lifecycle does for matched conversations):
+
+```jsonc
+// agents.bindings[] — initializes + routes matched channel turns to claude-bridge
+{ "type": "acp", "agentId": "main",
+  "match": { "channel": "telegram", "accountId": "*" },
+  "acp": { "backend": "claude-bridge", "mode": "persistent" } }
+```
+
+A one-off `openclaw agent` CLI turn does **not** initialize an ACP session, so it
+falls back to the model lane — use a live channel (Telegram) with the binding to
+exercise the backend end-to-end. Verified on host 2026-06-05: gateway startup logged
+`registered ACP backend "claude-bridge"` and listed the plugin among loaded plugins.

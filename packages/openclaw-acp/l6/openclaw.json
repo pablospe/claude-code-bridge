@@ -1,5 +1,5 @@
 {
-  "_comment": "ISOLATED test config for L6 (OpenClaw gateway loads the claude-bridge plugin). Used only with OPENCLAW_STATE_DIR/OPENCLAW_HOME/OPENCLAW_CONFIG_PATH pointing at throwaway dirs — never the live ~/.openclaw. See run-l6-smoke.sh.",
+  "gateway": { "mode": "local", "auth": { "mode": "token", "token": "l6-smoke-token" } },
   "plugins": {
     "enabled": true,
     "load": {
@@ -27,6 +27,14 @@
           "type": "acp",
           "acp": { "agent": "main", "backend": "claude-bridge", "mode": "persistent" }
         }
+      }
+    ],
+    "bindings": [
+      {
+        "type": "acp",
+        "agentId": "main",
+        "match": { "channel": "telegram", "accountId": "*" },
+        "acp": { "backend": "claude-bridge", "mode": "persistent" }
       }
     ]
   }
