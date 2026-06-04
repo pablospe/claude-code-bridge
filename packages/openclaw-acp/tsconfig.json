@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
+  },
+  "references": [
+    { "path": "../core" },
+    { "path": "../claude-code" },
+    { "path": "../process" }
+  ],
+  "include": ["src"]
+}

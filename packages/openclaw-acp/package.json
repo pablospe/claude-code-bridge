@@ -9,9 +9,23 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "scripts": {
+    "build": "bun build src/index.ts --target=node --outfile=dist/index.js --external '@homebridge/node-pty-prebuilt-multiarch' --external 'openclaw' --external 'openclaw/*'",
+    "build:smoke": "bun build src/smoke.ts --target=node --outfile=dist/smoke.mjs --external '@homebridge/node-pty-prebuilt-multiarch'",
+    "smoke:node": "bun run build:smoke && node dist/smoke.mjs"
+  },
   "dependencies": {
     "@ccb/claude-code": "workspace:*",
     "@ccb/core": "workspace:*",
     "@ccb/process": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": ["./dist/index.js"],
+    "compat": {
+      "pluginApi": ">=2026.4.25"
+    },
+    "build": {
+      "openclawVersion": "2026.6.2"
+    }
   }
 }
