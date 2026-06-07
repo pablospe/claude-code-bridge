@@ -38,6 +38,10 @@ export default definePluginEntry({
         const storeDir = join(ctx.stateDir, "claude-bridge-sessions");
         const bridge = new Bridge({
           storeDir,
+          // Cold-start headroom: spawning a fresh interactive `claude` plus the
+          // channel handshake can exceed the 30s default under gateway load.
+          // Override with CCB_START_TIMEOUT_MS if needed.
+          startTimeoutMs: Number(process.env.CCB_START_TIMEOUT_MS) || 90_000,
           supervisorFactory: claudeCodeSupervisorFactory({
             channels,
             hooks: { events: DEFAULT_HOOKS },
