@@ -1,0 +1,13 @@
+{
+  "id": "claude-bridge",
+  "name": "Claude Bridge ACP Runtime",
+  "description": "ACP runtime backend that drives an interactive Claude Code session (Max subscription) via claude-code-bridge.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

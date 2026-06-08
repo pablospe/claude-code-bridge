@@ -294,10 +294,18 @@ export class ClaudeCodeSupervisor implements Supervisor {
     try {
       const mcpConfigPath = join(tempDir, "mcp.json");
       const channelBin = resolveChannelServerBinPath();
+      // Runtime for the channel server + hook relay. Defaults to the current
+      // runtime (process.execPath). ccb's mcp-channel is not yet fully
+      // Node-compatible, so when ccb runs embedded under Node (e.g. inside an
+      // OpenClaw gateway) the channel `hello` handshake can silently stall;
+      // setting CCB_CHANNEL_RUNTIME (e.g. to a `bun` path) runs the channel
+      // server under a compatible runtime without changing the host process.
+      const channelRuntimeCommand =
+        (process.env.CCB_CHANNEL_RUNTIME ?? "").trim() || process.execPath;
       const config = generateMcpConfig({
         sessionId,
         endpoint: endpoint.endpoint,
-        command: process.execPath,
+        command: channelRuntimeCommand,
         args: [channelBin],
       });
       await this.#writeFile(mcpConfigPath, JSON.stringify(config, null, 2), "utf8");
@@ -306,7 +314,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
         const settingsPath = join(tempDir, "settings.json");
         const settings = generateHooksSettings({
           events: this.#hooks.events,
-          command: process.execPath,
+          command: channelRuntimeCommand,
           args: [resolveHookRelayBinPath()],
         });
         // mode 0600 per docs/M3.md: the file lives under tmpdir() for the

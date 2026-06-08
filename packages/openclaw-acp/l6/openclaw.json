@@ -1,0 +1,41 @@
+{
+  "gateway": { "mode": "local", "auth": { "mode": "token", "token": "l6-smoke-token" } },
+  "plugins": {
+    "enabled": true,
+    "load": {
+      "paths": ["/home/pablo/code/ccb-openclaw-acp/packages/openclaw-acp"]
+    },
+    "entries": {
+      "claude-bridge": { "enabled": true }
+    }
+  },
+  "acp": {
+    "enabled": true,
+    "dispatch": { "enabled": true },
+    "backend": "claude-bridge",
+    "defaultAgent": "main",
+    "allowedAgents": ["main"]
+  },
+  "agents": {
+    "defaults": { "sandbox": { "mode": "off" } },
+    "list": [
+      {
+        "id": "main",
+        "default": true,
+        "sandbox": { "mode": "off" },
+        "runtime": {
+          "type": "acp",
+          "acp": { "agent": "main", "backend": "claude-bridge", "mode": "persistent" }
+        }
+      }
+    ],
+    "bindings": [
+      {
+        "type": "acp",
+        "agentId": "main",
+        "match": { "channel": "telegram", "accountId": "*" },
+        "acp": { "backend": "claude-bridge", "mode": "persistent" }
+      }
+    ]
+  }
+}

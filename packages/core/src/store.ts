@@ -1,5 +1,5 @@
 import { createWriteStream, type WriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { BridgeEvent } from "./events.ts";
 
@@ -34,11 +34,18 @@ export class JsonlEventStore {
   }
 
   async readAll(): Promise<BridgeEvent[]> {
-    const file = Bun.file(this.#path);
-    if (!(await file.exists())) {
-      return [];
+    // node:fs (not Bun.file) so the library runs under Node, not just Bun —
+    // OpenClaw and other consumers embed this on the Node runtime. ENOENT is
+    // the "no log yet" case and maps to an empty history.
+    let text: string;
+    try {
+      text = await readFile(this.#path, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        return [];
+      }
+      throw err;
     }
-    const text = await file.text();
     if (text.length === 0) {
       return [];
     }
