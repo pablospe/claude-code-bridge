@@ -132,6 +132,43 @@ Terminal 1 streams the round-trip as structured events:
 For the full verified walkthrough — including enabling the channels preview
 and the alternative `ccb-launcher` flow — see [`docs/SMOKE.md`](./docs/SMOKE.md).
 
+## Usage: as an API server (`ccb api`)
+
+The bridge can also serve a warm claude session pool behind an HTTP API that
+speaks **both** the OpenAI and Anthropic wire formats — so LiteLLM, the OpenAI
+SDK, the official `anthropic` SDK, and Instructor all work against your
+interactive session with zero client changes:
+
+```bash
+ccb api
+#   ccb api listening on http://127.0.0.1:18485/v1
+```
+
+Each request becomes one turn in a live session; `/clear` is injected between
+requests, so the pool stays warm instead of cold-restarting. Sessions launch
+clean (no user plugins, hooks, or MCP servers) and in raw-model mode (claude's
+own tools disabled — it answers instead of acting).
+
+```python
+# OpenAI dialect — litellm, openai SDK, instructor
+import litellm
+litellm.completion(model="openai/ccb-claude",
+                   api_base="http://127.0.0.1:18485/v1", api_key="ccb",
+                   messages=[{"role": "user", "content": "hello"}])
+
+# Anthropic dialect — official SDK, or export ANTHROPIC_BASE_URL
+from anthropic import Anthropic
+client = Anthropic(api_key="ccb", base_url="http://127.0.0.1:18485")
+client.messages.create(model="ccb-claude", max_tokens=1024,
+                       messages=[{"role": "user", "content": "hello"}])
+```
+
+Streaming, tool calling (including forced `tool_choice` for structured
+output), and crash-retry are supported in both dialects. Sampling parameters
+and `max_tokens` are accepted but ignored, and `usage` is estimated — see the
+[design doc](./docs/2026-06-10-openai-facade-design.md) for the honest
+limitations and [`docs/SMOKE.md`](./docs/SMOKE.md) for the verified smokes.
+
 ## Did it install? (no claude needed)
 
 A mock supervisor runs the whole event pipeline in-process, with no real
