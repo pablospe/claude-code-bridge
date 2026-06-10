@@ -52,4 +52,54 @@ describe("validateChatRequest", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("messages");
   });
+
+  test("absent tool_choice defaults to auto", () => {
+    const r = validateChatRequest({ model: "m", messages: [{ role: "user", content: "hi" }] });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.tool_choice).toBe("auto");
+  });
+
+  test("accepts the string literal tool_choice values", () => {
+    for (const tc of ["auto", "none", "required"] as const) {
+      const r = validateChatRequest({
+        model: "m",
+        messages: [{ role: "user", content: "hi" }],
+        tool_choice: tc,
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value.tool_choice).toBe(tc);
+    }
+  });
+
+  test("accepts the forced-function object and preserves the name", () => {
+    const r = validateChatRequest({
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      tool_choice: { type: "function", function: { name: "extract" } },
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.tool_choice).toEqual({ type: "function", function: { name: "extract" } });
+    }
+  });
+
+  test("rejects a forced-function object without a name", () => {
+    const r = validateChatRequest({
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      tool_choice: { type: "function" },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("tool_choice");
+  });
+
+  test("rejects garbage tool_choice values", () => {
+    const r = validateChatRequest({
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      tool_choice: "bogus",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("tool_choice");
+  });
 });

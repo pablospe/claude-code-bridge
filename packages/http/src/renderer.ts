@@ -1,10 +1,22 @@
 // packages/http/src/renderer.ts
-import type { ChatMessage, ToolDef } from "./openai-types.ts";
+import type { ChatMessage, ToolChoice, ToolDef } from "./openai-types.ts";
 
 export const TOOL_CALL_INSTRUCTION =
   "If you need a tool, reply with ONLY a fenced json block of the shape " +
   '{"tool_call": {"name": "<tool name>", "arguments": {...}}} — or ' +
   '{"tool_calls": [...]} for multiple calls. Otherwise reply normally.';
+
+export const TOOL_CALL_REQUIRED_INSTRUCTION =
+  "You MUST respond with ONLY a fenced json block calling one of the tools above — " +
+  '{"tool_call": {"name": "<tool name>", "arguments": {...}}} — or ' +
+  '{"tool_calls": [...]} for multiple calls. Do not reply with prose.';
+
+export function toolCallForcedInstruction(name: string): string {
+  return (
+    `You MUST respond with ONLY a fenced json block calling "${name}" — ` +
+    `{"tool_call": {"name": "${name}", "arguments": {...}}}. Do not reply with prose.`
+  );
+}
 
 /**
  * Normalize an OpenAI message `content` field to plain text. Accepts a string,
@@ -49,6 +61,7 @@ function renderMessage(m: ChatMessage): string {
 export function renderTranscript(
   messages: ReadonlyArray<ChatMessage>,
   tools: ReadonlyArray<ToolDef>,
+  toolChoice: ToolChoice = "auto",
 ): string {
   const parts: string[] = [];
   const system = messages.filter((m) => m.role === "system");
@@ -59,9 +72,15 @@ export function renderTranscript(
   if (rest.length > 0) {
     parts.push(rest.map(renderMessage).join("\n\n"));
   }
-  if (tools.length > 0) {
+  if (tools.length > 0 && toolChoice !== "none") {
     const schemas = tools.map((t) => JSON.stringify(t.function, null, 2)).join("\n");
-    parts.push(`[available tools]\n${schemas}\n\n${TOOL_CALL_INSTRUCTION}`);
+    const instruction =
+      toolChoice === "required"
+        ? TOOL_CALL_REQUIRED_INSTRUCTION
+        : toolChoice === "auto"
+          ? TOOL_CALL_INSTRUCTION
+          : toolCallForcedInstruction(toolChoice.function.name);
+    parts.push(`[available tools]\n${schemas}\n\n${instruction}`);
   }
   parts.push("Respond to the conversation above.");
   return parts.join("\n\n");

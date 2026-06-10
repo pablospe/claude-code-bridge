@@ -94,8 +94,8 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     }
     warnIgnoredParams(raw as Record<string, unknown>);
     const request = validated.value;
-    const prompt = renderTranscript(request.messages, request.tools);
-    const buffered = request.tools.length > 0;
+    const prompt = renderTranscript(request.messages, request.tools, request.tool_choice);
+    const buffered = request.tools.length > 0 && request.tool_choice !== "none";
 
     if (!request.stream) {
       try {

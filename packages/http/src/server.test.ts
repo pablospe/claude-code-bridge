@@ -85,6 +85,33 @@ describe("POST /v1/chat/completions", () => {
     expect(body.usage.total_tokens).toBeGreaterThan(0);
   });
 
+  test("forced tool_choice wires the forced instruction into the prompt", async () => {
+    // MockSupervisor echoes the rendered prompt; the parser degrades the echo to
+    // text, so the response content carrying the forced instruction proves the
+    // tool_choice reached renderTranscript.
+    const res = await post("/v1/chat/completions", {
+      model: "ccb-claude",
+      messages: [{ role: "user", content: "weather?" }],
+      tools: [{ type: "function", function: { name: "get_weather", parameters: {} } }],
+      tool_choice: { type: "function", function: { name: "get_weather" } },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+    expect(body.choices[0]?.message.content).toContain("You MUST respond");
+  });
+
+  test("tool_choice none suppresses the tool schema from the prompt", async () => {
+    const res = await post("/v1/chat/completions", {
+      model: "ccb-claude",
+      messages: [{ role: "user", content: "weather?" }],
+      tools: [{ type: "function", function: { name: "get_weather", parameters: {} } }],
+      tool_choice: "none",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+    expect(body.choices[0]?.message.content).not.toContain('"name": "get_weather"');
+  });
+
   test("streaming emits chunks then [DONE]", async () => {
     const res = await post("/v1/chat/completions", {
       model: "ccb-claude",

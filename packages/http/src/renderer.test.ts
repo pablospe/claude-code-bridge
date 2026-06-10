@@ -1,6 +1,15 @@
 // packages/http/src/renderer.test.ts
 import { describe, expect, test } from "bun:test";
-import { renderTranscript, TOOL_CALL_INSTRUCTION } from "./renderer.ts";
+import {
+  renderTranscript,
+  TOOL_CALL_INSTRUCTION,
+  TOOL_CALL_REQUIRED_INSTRUCTION,
+  toolCallForcedInstruction,
+} from "./renderer.ts";
+
+const WEATHER_TOOLS = [
+  { type: "function" as const, function: { name: "get_weather", parameters: { type: "object" } } },
+];
 
 describe("renderTranscript", () => {
   test("single user message renders with label and reply instruction", () => {
@@ -119,5 +128,41 @@ describe("renderTranscript", () => {
   test("tool message without tool_call_id renders for unknown", () => {
     const out = renderTranscript([{ role: "tool", content: "result" }], []);
     expect(out).toContain("[tool result for unknown]");
+  });
+
+  test("forced-function tool_choice renders a name-specific instruction", () => {
+    const out = renderTranscript([{ role: "user", content: "weather?" }], WEATHER_TOOLS, {
+      type: "function",
+      function: { name: "get_weather" },
+    });
+    expect(out).toContain('"name": "get_weather"');
+    expect(out).toContain("You MUST respond");
+    expect(out).toContain("get_weather");
+    expect(out).not.toContain(TOOL_CALL_INSTRUCTION);
+  });
+
+  test("required tool_choice renders the forced-call instruction", () => {
+    const out = renderTranscript(
+      [{ role: "user", content: "weather?" }],
+      WEATHER_TOOLS,
+      "required",
+    );
+    expect(out).toContain('"name": "get_weather"');
+    expect(out).toContain(TOOL_CALL_REQUIRED_INSTRUCTION);
+    expect(out).not.toContain(TOOL_CALL_INSTRUCTION);
+  });
+
+  test("none tool_choice suppresses schemas and every instruction", () => {
+    const out = renderTranscript([{ role: "user", content: "weather?" }], WEATHER_TOOLS, "none");
+    expect(out).not.toContain('"name": "get_weather"');
+    expect(out).not.toContain(TOOL_CALL_INSTRUCTION);
+    expect(out).not.toContain(TOOL_CALL_REQUIRED_INSTRUCTION);
+    expect(out).not.toContain("You MUST respond");
+  });
+
+  test("toolCallForcedInstruction embeds the given name", () => {
+    const out = toolCallForcedInstruction("extract");
+    expect(out).toContain('"extract"');
+    expect(out).toContain("You MUST respond");
   });
 });
