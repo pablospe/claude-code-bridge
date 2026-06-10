@@ -19,22 +19,32 @@ export interface TurnResult {
  * stream BEFORE sending so no event is missed, then resolves on the first
  * turn-terminal event: agent.reply{final:true} or agent.done (both must be
  * handled — agent.done is the only signal for a no-reply turn).
+ *
+ * Non-final agent.reply events are partial chunks; the final reply is the last
+ * chunk. The turn's content is their concatenation, mirroring how the SSE
+ * deltas concatenate client-side.
+ *
+ * The event iterator is hoisted and disposed in a finally so an abandoned turn
+ * (timeout) or a completed turn releases its EventBus subscriber promptly.
  */
 export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
   const { bridge, sessionId, prompt, timeoutMs, onDelta } = options;
   const events = bridge.events(sessionId);
+  const it = events[Symbol.asyncIterator]();
 
   const turn = (async (): Promise<TurnResult> => {
     await bridge.sendMessage(sessionId, prompt);
     let finalContent = "";
-    for await (const ev of events) {
+    while (true) {
+      const { value: ev, done } = await it.next();
+      if (done) throw new Error("event stream closed without a terminal event");
       if (ev.type === "agent.progress") {
         onDelta?.(ev.content);
         continue;
       }
       if (ev.type === "agent.reply") {
         onDelta?.(ev.content);
-        if (ev.final) return { content: ev.content };
+        if (ev.final) return { content: finalContent + ev.content };
         finalContent += ev.content;
         continue;
       }
@@ -43,7 +53,6 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
         throw new Error(`session ended mid-turn${ev.reason ? `: ${ev.reason}` : ""}`);
       }
     }
-    throw new Error("event stream closed without a terminal event");
   })();
 
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -54,5 +63,6 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
     return await Promise.race([turn, timeout]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    void it.return?.(undefined);
   }
 }
