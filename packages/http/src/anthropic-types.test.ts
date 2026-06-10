@@ -211,6 +211,85 @@ describe("validateAnthropicRequest — translation", () => {
     }
   });
 
+  test("mid-conversation role:system message → system ChatMessage at its position", () => {
+    const r = validateAnthropicRequest({
+      model: "m",
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "system", content: "Terse mode." },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.messages[0]).toEqual({ role: "user", content: "hi" });
+      expect(r.value.messages[1]).toEqual({ role: "system", content: "Terse mode." });
+    }
+  });
+
+  test("mid-conversation system with text blocks joins into content", () => {
+    const r = validateAnthropicRequest({
+      model: "m",
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "system",
+          content: [
+            { type: "text", text: "a" },
+            { type: "text", text: "b" },
+          ],
+        },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.messages[1]).toEqual({ role: "system", content: "ab" });
+    }
+  });
+
+  test("tool without input_schema yields function def with no parameters key", () => {
+    const r = validateAnthropicRequest({
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [{ name: "no_schema", description: "d" }],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const def = r.value.tools[0];
+      expect(def).toBeDefined();
+      if (def) {
+        expect("parameters" in def.function).toBe(false);
+        expect(def.function.name).toBe("no_schema");
+      }
+    }
+  });
+
+  test("interleaved text-before-tool_result: tool message first, text user message after", () => {
+    // Documents the chosen reordering: even when text appears BEFORE the
+    // tool_result in the content array, the tool message is emitted first and
+    // the text becomes a separate user message after it.
+    const r = validateAnthropicRequest({
+      model: "m",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "here:" },
+            { type: "tool_result", tool_use_id: "t1", content: "42" },
+          ],
+        },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.messages[0]).toEqual({
+        role: "tool",
+        tool_call_id: "t1",
+        content: "42",
+      });
+      expect(r.value.messages[1]).toEqual({ role: "user", content: "here:" });
+    }
+  });
+
   test("tools map to internal function defs", () => {
     const r = validateAnthropicRequest({
       model: "m",
@@ -297,7 +376,7 @@ describe("validateAnthropicRequest — translation", () => {
     test("bad role", () => {
       const r = validateAnthropicRequest({
         model: "m",
-        messages: [{ role: "system", content: "x" }],
+        messages: [{ role: "tool", content: "x" }],
       });
       expect(r.ok).toBe(false);
     });

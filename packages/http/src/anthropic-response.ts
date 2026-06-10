@@ -50,7 +50,7 @@ export function buildAnthropicMessage(input: {
           name: c.function.name,
           input: parseArguments(c.function.arguments),
         }));
-  const completionText = parsed.kind === "text" ? parsed.content : JSON.stringify(parsed.calls);
+  const completionText = parsed.kind === "text" ? parsed.content : JSON.stringify(content);
   return {
     id: newAnthropicMessageId(),
     type: "message",

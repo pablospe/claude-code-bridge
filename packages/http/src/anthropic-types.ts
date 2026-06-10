@@ -13,7 +13,7 @@ export interface TranslatedRequest {
   readonly stream: boolean;
 }
 
-const ANTHROPIC_ROLES = new Set(["user", "assistant"]);
+const ANTHROPIC_ROLES = new Set(["user", "assistant", "system"]);
 const FUNCTION_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
 /** Join an Anthropic text-block array (or a bare string) into plain text. */
@@ -85,7 +85,7 @@ function translateTools(rawTools: unknown): ReadonlyArray<ToolDef> {
     const fn: ToolDef["function"] = {
       name: typeof o.name === "string" ? o.name : "",
       ...(typeof o.description === "string" ? { description: o.description } : {}),
-      parameters: o.input_schema,
+      ...(o.input_schema !== undefined ? { parameters: o.input_schema } : {}),
     };
     return { type: "function", function: fn };
   });
@@ -97,7 +97,13 @@ function translateTools(rawTools: unknown): ReadonlyArray<ToolDef> {
  * - user: tool_result blocks become role:"tool" messages (emitted first), and
  *   any remaining text becomes a single user message after them.
  */
-function translateMessage(role: "user" | "assistant", content: unknown): ChatMessage[] {
+function translateMessage(role: "user" | "assistant" | "system", content: unknown): ChatMessage[] {
+  // Mid-conversation system message (beta mid-conversation-system-2026-04-07):
+  // join its text into a single internal system ChatMessage at its position.
+  if (role === "system") {
+    return [{ role: "system", content: blocksToText(content) }];
+  }
+
   // Bare string content: a single message of the same role.
   if (typeof content === "string") {
     return [{ role, content }];
@@ -212,7 +218,7 @@ export function validateAnthropicRequest(body: unknown): Validated<TranslatedReq
     messages.push({ role: "system", content: systemText });
   }
   for (const m of b.messages) {
-    const mm = m as { role: "user" | "assistant"; content: unknown };
+    const mm = m as { role: "user" | "assistant" | "system"; content: unknown };
     messages.push(...translateMessage(mm.role, mm.content));
   }
 

@@ -74,16 +74,16 @@ describe("buildAnthropicMessage", () => {
     expect(r.content[0]).toEqual({ type: "tool_use", id: "c", name: "f", input: {} });
   });
 
-  test("output_tokens for tool_calls uses JSON.stringify(calls)", () => {
+  test("output_tokens for tool_calls estimated over emitted content blocks", () => {
     const calls = [
-      { id: "c", type: "function" as const, function: { name: "f", arguments: "{}" } },
+      { id: "c", type: "function" as const, function: { name: "f", arguments: '{"x":1}' } },
     ];
     const r = buildAnthropicMessage({
       model: "m",
       prompt: "p",
       parsed: { kind: "tool_calls", calls },
     });
-    expect(r.usage.output_tokens).toBe(estimateTokens(JSON.stringify(calls)));
+    expect(r.usage.output_tokens).toBe(estimateTokens(JSON.stringify(r.content)));
   });
 });
 
