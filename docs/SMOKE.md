@@ -454,3 +454,86 @@ claude --channels plugin:fakechat@claude-plugins-official
 ```
 
 If fakechat hits the same gate, you're waiting on `tengu_harbor` rollout. If fakechat works, but `ccb` doesn't, that's something to debug in this project specifically.
+
+## OpenAI facade (`ccb api`)
+
+All smokes assume a logged-in `claude` >= 2.1.169 on PATH. Start the server
+in one terminal and leave it running:
+
+```bash
+bun apps/ccb/src/cli.ts api --supervisor claude --pool-size 1
+```
+
+### Smoke 1 — clean boot (decision gate)
+
+The pool session must boot with --safe-mode AND still connect the ccb
+channel. Watch the server terminal: a successful boot prints the listening
+line and the first request below succeeds. If startSession times out, safe
+mode severed the --mcp-config channel: switch cleanSession to the
+CLAUDE_CONFIG_DIR fallback documented in
+docs/2026-06-10-openai-facade-design.md and re-run.
+
+```bash
+curl -s http://127.0.0.1:18485/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"ccb-claude","messages":[{"role":"user","content":"Reply with exactly the word: pong"}]}' | jq .
+```
+
+Expected: choices[0].message.content contains "pong". The session must show
+no operator customizations (no claude-mem observations, no plugin hooks in
+the reply context).
+
+### Smoke 2 — /clear isolation between requests
+
+```bash
+curl -s http://127.0.0.1:18485/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"ccb-claude","messages":[{"role":"user","content":"Remember this codeword: ZANZIBAR. Reply OK."}]}' | jq -r '.choices[0].message.content'
+
+curl -s http://127.0.0.1:18485/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"ccb-claude","messages":[{"role":"user","content":"What codeword did I give you earlier? If none, say NONE."}]}' | jq -r '.choices[0].message.content'
+```
+
+Expected: second reply says NONE (the /clear between turns wiped the first
+request's context). If it answers ZANZIBAR, /clear injection is broken.
+
+### Smoke 3 — tool-calling round trip
+
+```bash
+curl -s http://127.0.0.1:18485/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "ccb-claude",
+    "messages": [{"role": "user", "content": "What is the weather in Paris? Use the tool."}],
+    "tools": [{"type": "function", "function": {"name": "get_weather",
+      "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}]
+  }' | jq '.choices[0]'
+```
+
+Expected: finish_reason "tool_calls" and a get_weather call with city Paris.
+Then complete the round trip (substitute the printed tool_call id):
+
+```bash
+curl -s http://127.0.0.1:18485/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "ccb-claude",
+    "messages": [
+      {"role": "user", "content": "What is the weather in Paris? Use the tool."},
+      {"role": "assistant", "content": null, "tool_calls": [{"id": "<ID>", "type": "function",
+        "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}}]},
+      {"role": "tool", "tool_call_id": "<ID>", "content": "{\"temp_c\": 18, \"sky\": \"sunny\"}"}
+    ]
+  }' | jq -r '.choices[0].message.content'
+```
+
+Expected: a sentence reporting ~18°C / sunny, finish_reason "stop".
+
+### Smoke 4 — litellm end to end (non-streaming + streaming)
+
+```bash
+uv run --with litellm scripts/litellm-smoke.py
+```
+
+Expected: prints both replies and `OK`, exit 0.
