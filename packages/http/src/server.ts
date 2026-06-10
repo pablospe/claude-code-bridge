@@ -1,0 +1,176 @@
+import { validateChatRequest } from "./openai-types.ts";
+import { renderTranscript } from "./renderer.ts";
+import { buildChunk, buildCompletion, newCompletionId } from "./response.ts";
+import type { SessionPool } from "./pool.ts";
+import { parseReply } from "./tool-call-parser.ts";
+import { runTurn } from "./turn.ts";
+
+export const FACADE_MODEL_ID = "ccb-claude";
+
+export interface ApiServerOptions {
+  readonly pool: SessionPool;
+  readonly host: string;
+  readonly port: number;
+  readonly turnTimeoutMs: number;
+  readonly apiKey?: string;
+}
+
+export interface ApiServerHandle {
+  readonly url: string;
+  stop(): Promise<void>;
+}
+
+function errorResponse(status: number, type: string, message: string): Response {
+  return Response.json({ error: { message, type, param: null, code: null } }, { status });
+}
+
+const IGNORED_PARAMS = [
+  "temperature",
+  "top_p",
+  "max_tokens",
+  "max_completion_tokens",
+  "n",
+  "logprobs",
+  "response_format",
+];
+const warnedParams = new Set<string>();
+
+function warnIgnoredParams(body: Record<string, unknown>): void {
+  for (const p of IGNORED_PARAMS) {
+    if (body[p] !== undefined && !warnedParams.has(p)) {
+      warnedParams.add(p);
+      console.error(`ccb api: ignoring unsupported parameter '${p}' (logged once)`);
+    }
+  }
+}
+
+export async function startApiServer(options: ApiServerOptions): Promise<ApiServerHandle> {
+  const { pool, turnTimeoutMs, apiKey } = options;
+
+  async function handleCompletions(req: Request): Promise<Response> {
+    let raw: unknown;
+    try {
+      raw = await req.json();
+    } catch {
+      return errorResponse(400, "invalid_request_error", "request body must be valid JSON");
+    }
+    const validated = validateChatRequest(raw);
+    if (!validated.ok) {
+      return errorResponse(400, "invalid_request_error", validated.error);
+    }
+    warnIgnoredParams(raw as Record<string, unknown>);
+    const request = validated.value;
+    const prompt = renderTranscript(request.messages, request.tools);
+    const buffered = request.tools.length > 0;
+
+    if (!request.stream) {
+      try {
+        const result = await pool.withSession((sessionId) =>
+          runTurn({ bridge: pool.bridge, sessionId, prompt, timeoutMs: turnTimeoutMs }),
+        );
+        const parsed = parseReply(result.content);
+        return Response.json(buildCompletion({ model: request.model, prompt, parsed }));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const status = message.includes("timed out") ? 504 : 500;
+        return errorResponse(status, "server_error", message);
+      }
+    }
+
+    const id = newCompletionId();
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const send = (data: unknown) =>
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        try {
+          let sentRole = false;
+          const result = await pool.withSession((sessionId) =>
+            runTurn({
+              bridge: pool.bridge,
+              sessionId,
+              prompt,
+              timeoutMs: turnTimeoutMs,
+              onDelta: (delta) => {
+                if (buffered) return; // tool turns are buffered until parseable
+                if (!sentRole) {
+                  sentRole = true;
+                  send(buildChunk({ id, model: request.model, delta: { role: "assistant" } }));
+                }
+                send(buildChunk({ id, model: request.model, delta: { content: delta } }));
+              },
+            }),
+          );
+          const parsed = parseReply(result.content);
+          if (parsed.kind === "tool_calls") {
+            send(
+              buildChunk({
+                id,
+                model: request.model,
+                delta: {
+                  role: "assistant",
+                  tool_calls: parsed.calls.map((c, index) => ({ ...c, index })),
+                },
+              }),
+            );
+            send(buildChunk({ id, model: request.model, delta: {}, finishReason: "tool_calls" }));
+          } else {
+            if (buffered) {
+              send(
+                buildChunk({
+                  id,
+                  model: request.model,
+                  delta: { role: "assistant", content: parsed.content },
+                }),
+              );
+            }
+            send(buildChunk({ id, model: request.model, delta: {}, finishReason: "stop" }));
+          }
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        } catch (err) {
+          controller.error(err);
+        }
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      },
+    });
+  }
+
+  const server = Bun.serve({
+    hostname: options.host,
+    port: options.port,
+    idleTimeout: 0,
+    async fetch(req: Request): Promise<Response> {
+      if (apiKey !== undefined) {
+        const auth = req.headers.get("authorization");
+        if (auth !== `Bearer ${apiKey}`) {
+          return errorResponse(401, "authentication_error", "invalid or missing API key");
+        }
+      }
+      const url = new URL(req.url);
+      if (req.method === "GET" && url.pathname === "/v1/models") {
+        return Response.json({
+          object: "list",
+          data: [{ id: FACADE_MODEL_ID, object: "model", created: 0, owned_by: "ccb" }],
+        });
+      }
+      if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+        return handleCompletions(req);
+      }
+      return errorResponse(404, "invalid_request_error", `unknown route: ${url.pathname}`);
+    },
+  });
+
+  return {
+    url: `http://${options.host}:${server.port}`,
+    async stop() {
+      await server.stop(true);
+    },
+  };
+}
