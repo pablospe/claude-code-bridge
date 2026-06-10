@@ -151,6 +151,55 @@ cannot be hard-guaranteed to emit the call, so a prose reply still degrades to
 text. Clients needing a hard guarantee (e.g. Instructor) should rely on their
 own retry, which the stateless design makes cheap.
 
+## Anthropic dialect (`POST /v1/messages`)
+
+The facade speaks a second wire dialect over the same internals. An Anthropic
+Messages request is translated into the same internal shapes the OpenAI path
+uses, so it flows through the identical renderer, tool-call parser, and session
+pool — only the request/response translation layer differs.
+
+```
+anthropic SDK ──HTTP──▶ POST /v1/messages
+                          │ translate → internal messages[]/tools[]
+                          ▼
+                        (same renderer → prompt → pool → parser)
+                          │ internal reply → translate → Messages response
+                          ▼
+                        anthropic SDK
+```
+
+Request subset supported:
+
+- `system` (string or block list) → preamble.
+- `messages[]` content blocks: `text`, `tool_use`, `tool_result` (the
+  OpenAI `assistant tool_calls` / `role:"tool"` equivalents).
+- `tools[]` (Anthropic `input_schema` shape) and `tool_choice`:
+  `auto` / `any` / `none` / `{type:"tool", name}` map onto the same prompt
+  enforcement as the OpenAI `auto` / `required` / `none` / forced-function
+  cases.
+- `stream: true` → real SSE.
+
+Response and SSE shapes match the real Messages API: a non-streaming reply is a
+`message` object with `content` blocks (`text` and/or `tool_use`) and a
+`stop_reason` (`end_turn` for text, `tool_use` when a tool call is parsed). The
+streaming path emits the documented event sequence — `message_start`,
+`content_block_start` / `content_block_delta` (`text_delta`) /
+`content_block_stop`, `message_delta` (carrying `stop_reason`), `message_stop`.
+
+Auth: the SDK's `x-api-key` header is accepted, as is `Authorization: Bearer`;
+both are ignored unless a shared secret is configured (same policy as the
+OpenAI dialect). Ignored params (`max_tokens`, `temperature`, `top_p`, `top_k`,
+`thinking`, `metadata`, `stop_sequences`) are accepted and warned once per
+server run.
+
+`GET /v1/models` stays OpenAI-shaped — a documented limitation; the anthropic
+dialect adds only the `/v1/messages` endpoint and does not provide an
+Anthropic-shaped model listing.
+
+Tool calling here has the same boundary as the OpenAI dialect: degrade-to-text
+when no tool block parses, and best-effort (not hard-guaranteed) enforcement of
+a forced `tool_choice`.
+
 ## Streaming
 
 `stream: true` → real SSE. `agent.progress` and non-final `agent.reply`

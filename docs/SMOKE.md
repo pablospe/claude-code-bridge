@@ -551,3 +551,26 @@ Expected: prints `extracted: name='John Doe' age=30` and `OK`, exit 0. This
 exercises the `tool_choice` forced-function path: Instructor's default TOOLS
 mode sends the Pydantic schema as a tool with a forced tool_choice; the facade
 renders the MUST-call instruction and the reply parses into `tool_calls`.
+
+### Smoke 6 — Anthropic dialect via the official SDK
+
+```bash
+uv run --with anthropic scripts/anthropic-smoke.py
+```
+
+Expected output (three sections then `OK`, exit 0):
+
+```
+non-streaming reply: 'pong' stop_reason=end_turn
+streamed reply: 'pong' stop_reason=end_turn
+tool call: get_weather({'city': 'Paris'})
+final answer: '...18...'
+OK
+```
+
+This drives the facade's `POST /v1/messages` endpoint: non-streaming, the
+`messages.stream` SSE path, and a `tool_use` / `tool_result` round trip with a
+forced `tool_choice`. Setting `ANTHROPIC_BASE_URL=http://127.0.0.1:18485`
+redirects ANY anthropic-SDK tool to the facade with zero code changes.
+litellm's anthropic provider (`model="anthropic/ccb-claude",
+api_base="http://127.0.0.1:18485"`) also routes here.
