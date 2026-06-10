@@ -13,6 +13,9 @@ export interface Supervisor {
    * Reset the driven session's conversation context in place (e.g. inject
    * /clear into the interactive UI). Optional: supervisors that cannot reset
    * without a restart leave it undefined and Bridge.clear rejects.
+   * Callers must ensure the session is idle (no outstanding turn); clearing
+   * mid-turn races the reset against the active turn, and Bridge does not guard
+   * against this.
    */
   clear?(sessionId: string): Promise<void>;
   close(sessionId: string): Promise<void>;

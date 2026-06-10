@@ -58,4 +58,27 @@ describe("Bridge.clear", () => {
     await expect(bridge.clear(id)).rejects.toThrow("does not support clear");
     await bridge.close(id);
   });
+
+  test("clear during close rejects with 'closing'", async () => {
+    class SlowCloseSupervisor implements Supervisor {
+      async start(): Promise<void> {}
+      async sendMessage(): Promise<void> {}
+      async interrupt(): Promise<void> {}
+      async clear(): Promise<void> {}
+      async close(): Promise<void> {
+        await new Promise((r) => setTimeout(r, 30));
+      }
+    }
+    const bridge = new Bridge({
+      storeDir,
+      supervisorFactory: () => new SlowCloseSupervisor(),
+    });
+    const { id } = await bridge.startSession({});
+
+    const closing = bridge.close(id);
+    // yield so close sets state to "closing"
+    await new Promise((r) => setTimeout(r, 5));
+    await expect(bridge.clear(id)).rejects.toThrow(/closing/);
+    await closing;
+  });
 });
