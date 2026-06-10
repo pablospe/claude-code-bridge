@@ -87,6 +87,24 @@ export interface ClaudeCodeSupervisorOptions {
    * visibility (see docs/M3.md).
    */
   readonly hooks?: { readonly events: ReadonlyArray<HookEvent> };
+  /**
+   * Drop the operator's user-tier customizations from the driven session
+   * while keeping the bridge channel functional. Implemented as the
+   * dev-flag trim (--strict-mcp-config + --setting-sources project,local —
+   * which on claude >= 2.1.169 also excludes user-enabled plugins and
+   * hooks) minus --disable-slash-commands, which clear() needs to inject
+   * /clear. Verified empirically: --safe-mode severs the --mcp-config
+   * channel, and CLAUDE_CONFIG_DIR breaks the channels-to-MCP binding
+   * (claude replies in the TUI instead of bridge_reply), so neither is
+   * usable here. Requires dev-flag channels: plugin mode resolves the ccb
+   * channel through the user tier this option excludes.
+   */
+  readonly cleanSession?: boolean;
+  /**
+   * Disallow claude's own built-in tools so the session can only answer via
+   * the bridge tools — it behaves like a bare model rather than an agent.
+   */
+  readonly rawModel?: boolean;
 }
 
 /**
@@ -147,6 +165,24 @@ const DEFAULT_AUTO_CONFIRM_INITIAL_DELAY_MS = 500;
  */
 const DEFAULT_AUTO_CONFIRM_RETRY_INTERVAL_MS = 3_000;
 /**
+ * Pause between the Escape and the /clear write so the TUI processes the
+ * key and re-renders an empty input box before receiving the command. The
+ * TUI reacts to a keypress well within one frame (~16ms); 50ms adds margin
+ * without meaningfully delaying the pool's acquire path.
+ */
+const CLEAR_ESCAPE_SETTLE_MS = 50;
+/**
+ * Pause after writing /clear before clear() resolves, giving the TUI time
+ * to process the command before the pool hands the session to the next
+ * turn (whose prompt arrives over the MCP channel, a separate transport
+ * that does not queue behind PTY keystrokes). A blind delay, not a
+ * readback: it narrows the race window rather than closing it. The
+ * fast-follow is to scan PTY output for the post-/clear redraw like the
+ * auto-confirm scanner does. /clear completes locally (no network), so
+ * 300ms is generous; against multi-second turns it is negligible latency.
+ */
+const CLEAR_COMMAND_SETTLE_MS = 300;
+/**
  * Maximum number of blind `\r` writes the scanner will emit. 6 covers a
  * ~20s boot window (3 + 5*3 = 18s of the 30s Bridge.startTimeoutMs default)
  * while keeping stray-empty-turn fallout bounded if claude already booted.
@@ -162,6 +198,11 @@ const DEFAULT_AUTO_CONFIRM_MAX_ATTEMPTS = 6;
 const AUTO_CONFIRM_BUFFER_MAX = Math.max(4096, DEV_CHANNELS_CONFIRM_HINT.length * 2);
 
 const ALLOWED_TOOLS = "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done";
+
+// Best-effort denylist of claude's built-in tool surface; --allowed-tools still
+// pre-approves only the bridge tools, so anything missed here prompts rather than runs.
+const DISALLOWED_BUILTIN_TOOLS =
+  "Bash BashOutput KillShell Edit MultiEdit Write Read Glob Grep WebFetch WebSearch Task NotebookEdit TodoWrite SlashCommand Skill ExitPlanMode";
 
 /**
  * Resolve the absolute path to `packages/mcp-channel/src/bin.ts` so the
@@ -202,6 +243,8 @@ export class ClaudeCodeSupervisor implements Supervisor {
   readonly #launcherFactory: LauncherFactory;
   readonly #writeFile: WriteFileFn;
   readonly #hooks: { readonly events: ReadonlyArray<HookEvent> } | undefined;
+  readonly #cleanSession: boolean;
+  readonly #rawModel: boolean;
 
   #ctx: SupervisorContext | undefined;
   #server: ControlServer | undefined;
@@ -224,6 +267,11 @@ export class ClaudeCodeSupervisor implements Supervisor {
       options.launcherFactory ?? ((cmd, args, opts) => defaultLaunch(cmd, [...args], opts));
     this.#writeFile = options.writeFile ?? writeFile;
     this.#hooks = options.hooks;
+    this.#cleanSession = options.cleanSession ?? false;
+    this.#rawModel = options.rawModel ?? false;
+    if (this.#cleanSession && this.#channels === "plugin") {
+      throw new Error("cleanSession requires dev-flag channels");
+    }
   }
 
   /**
@@ -387,6 +435,31 @@ export class ClaudeCodeSupervisor implements Supervisor {
     launcher.sendSignal("SIGINT");
   }
 
+  /**
+   * Write `/clear` into the TUI to reset the session's conversation context.
+   *
+   * Delivery is fire-and-forget — the PTY write is a no-op if the process
+   * already exited, and a successful return does not confirm the TUI processed
+   * the command. After writing /clear the method waits CLEAR_COMMAND_SETTLE_MS
+   * before resolving; this narrows (does not close) the race against the next
+   * turn's MCP-delivered prompt. Callers must ensure the session is idle (no
+   * in-flight turn) before calling.
+   */
+  async clear(sessionId: string): Promise<void> {
+    const launcher = this.#launcher;
+    if (!this.#ctx || !launcher) throw new Error("supervisor not started");
+    if (sessionId !== this.#ctx.sessionId) {
+      throw new Error(`unknown session: ${sessionId}`);
+    }
+    // Escape first dismisses any transient UI state (autocomplete popup,
+    // half-typed text); the pool only clears idle sessions so the input box
+    // is otherwise empty.
+    launcher.write("\x1b");
+    await new Promise((resolve) => setTimeout(resolve, CLEAR_ESCAPE_SETTLE_MS));
+    launcher.write("/clear\r");
+    await new Promise((resolve) => setTimeout(resolve, CLEAR_COMMAND_SETTLE_MS));
+  }
+
   async close(_sessionId: string): Promise<void> {
     this.#autoConfirmCleanup?.();
     this.#autoConfirmCleanup = undefined;
@@ -444,7 +517,12 @@ export class ClaudeCodeSupervisor implements Supervisor {
       // resolves the ccb plugin THROUGH the user-tier marketplace, so the same
       // exclusion would break it — hence this stays out of the plugin branch.)
       args.push("--setting-sources", "project,local");
-      args.push("--disable-slash-commands");
+      if (!this.#cleanSession) {
+        // A programmatic single-turn driver doesn't need the slash-command
+        // surface — except clear(), which types /clear into the TUI. Clean
+        // sessions therefore keep slash commands available.
+        args.push("--disable-slash-commands");
+      }
     } else {
       // Plugin mode: the channel server is declared by the plugin's
       // mcpServers entry, which claude loads from the plugin's manifest.
@@ -460,6 +538,9 @@ export class ClaudeCodeSupervisor implements Supervisor {
       args.push("--settings", this.#settingsPath);
     }
     args.push("--allowed-tools", ALLOWED_TOOLS);
+    if (this.#rawModel) {
+      args.push("--disallowed-tools", DISALLOWED_BUILTIN_TOOLS);
+    }
     return args;
   }
 

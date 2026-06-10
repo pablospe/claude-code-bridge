@@ -1,14 +1,11 @@
 import { join } from "node:path";
-import { Bridge } from "@ccb/core";
 import { type ChannelsMode, claudeCodeSupervisorFactory, type HookEvent } from "@ccb/claude-code";
+import { Bridge } from "@ccb/core";
 import {
   registerAcpRuntimeBackend,
   unregisterAcpRuntimeBackend,
 } from "openclaw/plugin-sdk/acp-runtime-backend";
-import {
-  definePluginEntry,
-  type OpenClawPluginApi,
-} from "openclaw/plugin-sdk/plugin-entry";
+import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { CLAUDE_BRIDGE_BACKEND_ID, createClaudeBridgeRuntime } from "./adapter.ts";
 
 const DEFAULT_HOOKS: HookEvent[] = ["PreToolUse", "PostToolUse", "Stop"];
@@ -53,7 +50,9 @@ export default definePluginEntry({
           runtime,
           healthy: () => true,
         });
-        ctx.logger.info(`registered ACP backend "${CLAUDE_BRIDGE_BACKEND_ID}" (claude-code-bridge)`);
+        ctx.logger.info(
+          `registered ACP backend "${CLAUDE_BRIDGE_BACKEND_ID}" (claude-code-bridge)`,
+        );
       },
       stop() {
         unregisterAcpRuntimeBackend(CLAUDE_BRIDGE_BACKEND_ID);

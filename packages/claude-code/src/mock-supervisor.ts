@@ -87,6 +87,20 @@ export class MockSupervisor implements Supervisor {
     // no-op for the mock supervisor
   }
 
+  #clearCalls = 0;
+
+  /** Number of clear() invocations. Test seam for pool/bridge tests. */
+  get clearCalls(): number {
+    return this.#clearCalls;
+  }
+
+  async clear(sessionId: string): Promise<void> {
+    if (sessionId !== this.#ctx?.sessionId) {
+      throw new Error(`unknown session: ${sessionId}`);
+    }
+    this.#clearCalls += 1;
+  }
+
   /**
    * Test seam: synthesize the supervisor-crashed event pair through the bridge
    * exactly as ClaudeCodeSupervisor / ServeSupervisor would on a peer

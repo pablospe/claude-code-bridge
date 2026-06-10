@@ -17,9 +17,10 @@ This is the durable entry point for the project's milestone documentation. Indiv
 These are not committed milestones. They exist as known, well-understood follow-ups that will
 land if a concrete consumer asks for them.
 
-- **HTTP / WebSocket adapter** (`packages/http`) and **ACP-compatible facade** (`packages/acp`).
-  Non-Node consumers and ACP-compatible orchestrators. Deferred until the event stream is rich
-  enough (post-M3 hook relay) to be worth exposing over a network boundary.
+- **HTTP adapter** (`packages/http`) — **landed** as the OpenAI/Anthropic-compatible API
+  facade served by `ccb api` (see `docs/2026-06-10-openai-facade-design.md`). A WebSocket
+  surface and the **ACP-compatible facade** (`packages/acp`) remain future work for
+  ACP-compatible orchestrators.
 - **`ccb attach <claude-pid>`** — attach to an already-running `claude` instead of managed
   launch. Deferred for discovery/state-ambiguity reasons; revisit if a consumer asks.
 

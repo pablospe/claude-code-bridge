@@ -2,8 +2,8 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Bridge } from "@ccb/core";
 import { mockSupervisorFactory } from "@ccb/claude-code";
+import { Bridge } from "@ccb/core";
 import type { AcpRuntimeEvent } from "./acp-contract.ts";
 import { createClaudeBridgeRuntime } from "./adapter.ts";
 

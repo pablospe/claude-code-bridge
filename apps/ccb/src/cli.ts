@@ -7,6 +7,7 @@ import {
 } from "@ccb/claude-code";
 import type { SupervisorFactory } from "@ccb/core";
 import { Command, InvalidArgumentError } from "commander";
+import { runApi } from "./api.ts";
 import { type DemoFormat, runDemo } from "./demo.ts";
 import { formatJson, formatPretty } from "./format.ts";
 import { runHooksConfig } from "./hooks-config.ts";
@@ -214,6 +215,46 @@ export function buildProgram(): Command {
         format: opts.format,
       });
     });
+
+  program
+    .command("api")
+    .description("serve an OpenAI-compatible API backed by a warm claude session pool")
+    .option("--host <host>", "address to bind", "127.0.0.1")
+    .option("--port <port>", "port to bind", parsePositiveInt, 18_485)
+    .option("--pool-size <n>", "number of warm sessions", parsePositiveInt, 1)
+    .option(
+      "--turn-timeout-ms <ms>",
+      "upper bound for a single completion turn",
+      parsePositiveInt,
+      300_000,
+    )
+    .option(
+      "--supervisor <mock|claude>",
+      "supervisor backing the pool: claude (default) or mock (tests)",
+      parseSupervisorChoice,
+      "claude" as SupervisorChoice,
+    )
+    .option("--store-dir <path>", "directory for per-session JSONL logs", ".ccb-data")
+    .option("--api-key <key>", "require this bearer token on every request")
+    .action(
+      async (opts: {
+        host: string;
+        port: number;
+        poolSize: number;
+        turnTimeoutMs: number;
+        supervisor: SupervisorChoice;
+        storeDir: string;
+        apiKey?: string;
+      }) => {
+        const api = await runApi(opts);
+        process.stdout.write(`ccb api listening on ${api.url}/v1\n`);
+        await new Promise<void>((resolve) => {
+          process.once("SIGINT", resolve);
+          process.once("SIGTERM", resolve);
+        });
+        await api.stop();
+      },
+    );
 
   program
     .command("mcp-config")

@@ -6,6 +6,7 @@
     { "path": "packages/mcp-channel" },
     { "path": "packages/claude-code" },
     { "path": "packages/openclaw-acp" },
+    { "path": "packages/http" },
     { "path": "apps/ccb" }
   ]
 }

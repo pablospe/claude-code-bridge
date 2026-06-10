@@ -161,6 +161,8 @@ async function startWithFakeLauncher(opts: {
   autoConfirmRetryIntervalMs?: number;
   autoConfirmMaxAttempts?: number;
   hooks?: { events: ReadonlyArray<"PreToolUse" | "PostToolUse" | "Stop"> };
+  cleanSession?: boolean;
+  rawModel?: boolean;
 }): Promise<{
   supervisor: ClaudeCodeSupervisor;
   ctx: SupervisorContext;
@@ -182,6 +184,8 @@ async function startWithFakeLauncher(opts: {
     autoConfirmRetryIntervalMs: opts.autoConfirmRetryIntervalMs,
     autoConfirmMaxAttempts: opts.autoConfirmMaxAttempts,
     hooks: opts.hooks,
+    cleanSession: opts.cleanSession,
+    rawModel: opts.rawModel,
     launcherFactory: factory,
   });
   const emitted: BridgeEvent[] = [];
@@ -965,6 +969,83 @@ test("hooks option: only the requested events appear in settings.json", async ()
   expect(Object.keys(parsed.hooks)).toEqual(["Stop"]);
   await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
+});
+
+test("clear writes escape then /clear to the PTY in order", async () => {
+  // The fake launcher records every write; clear() must inject Escape (\x1b)
+  // first to dismiss any transient UI state, then /clear\r to reset context.
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
+    channels: "dev-flag",
+    cleanSession: true,
+  });
+  await startResult;
+  await supervisor.clear(FAKE_SESSION_ID);
+  const writes = launcher.writes.join("");
+  expect(writes).toContain("\x1b");
+  expect(writes).toContain("/clear\r");
+  expect(launcher.writes.indexOf("\x1b")).toBeLessThan(launcher.writes.indexOf("/clear\r"));
+  await helloClient.close();
+  await supervisor.close(FAKE_SESSION_ID);
+});
+
+test("clear rejects before start with 'not started'", async () => {
+  const supervisor = new ClaudeCodeSupervisor({ launcherFactory: captureLauncherFactory() });
+  await expect(supervisor.clear(FAKE_SESSION_ID)).rejects.toThrow("not started");
+});
+
+test("cleanSession keeps user-tier exclusion without --disable-slash-commands", async () => {
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
+    channels: "dev-flag",
+    cleanSession: true,
+  });
+  await startResult;
+  const args = [...launcher.args];
+  expect(args).toContain("--strict-mcp-config");
+  expect(args).toContain("--setting-sources");
+  expect(args[args.indexOf("--setting-sources") + 1]).toBe("project,local");
+  expect(args).not.toContain("--safe-mode");
+  expect(args).not.toContain("--disable-slash-commands");
+  await helloClient.close();
+  await supervisor.close(FAKE_SESSION_ID);
+});
+
+test("default keeps the existing trimming flags and no --safe-mode", async () => {
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
+    channels: "dev-flag",
+  });
+  await startResult;
+  const args = [...launcher.args];
+  expect(args).not.toContain("--safe-mode");
+  expect(args).toContain("--disable-slash-commands");
+  expect(args).toContain("--setting-sources");
+  await helloClient.close();
+  await supervisor.close(FAKE_SESSION_ID);
+});
+
+test("rawModel adds --disallowed-tools with the built-in tools list", async () => {
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
+    channels: "dev-flag",
+    rawModel: true,
+  });
+  await startResult;
+  const args = [...launcher.args];
+  const i = args.indexOf("--disallowed-tools");
+  expect(i).toBeGreaterThan(-1);
+  expect(args[i + 1]).toContain("Bash");
+  expect(args[i + 1]).toContain("Edit");
+  await helloClient.close();
+  await supervisor.close(FAKE_SESSION_ID);
+});
+
+test("cleanSession with plugin channels throws at construction", () => {
+  expect(
+    () =>
+      new ClaudeCodeSupervisor({
+        channels: "plugin",
+        cleanSession: true,
+        launcherFactory: captureLauncherFactory(),
+      }),
+  ).toThrow("cleanSession requires dev-flag channels");
 });
 
 test("cooperative close: does NOT synthesize crash events", async () => {

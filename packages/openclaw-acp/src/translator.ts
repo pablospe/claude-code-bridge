@@ -1,8 +1,4 @@
-import {
-  type BridgeEvent,
-  CRASH_AGENT_DONE_REASON,
-  CRASH_SESSION_ENDED_REASON,
-} from "@ccb/core";
+import { type BridgeEvent, CRASH_AGENT_DONE_REASON, CRASH_SESSION_ENDED_REASON } from "@ccb/core";
 import type { AcpRuntimeEvent, AcpRuntimeTurnResult } from "./acp-contract.ts";
 
 /**

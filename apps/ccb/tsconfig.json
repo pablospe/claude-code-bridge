@@ -9,6 +9,7 @@
   "references": [
     { "path": "../../packages/core" },
     { "path": "../../packages/claude-code" },
-    { "path": "../../packages/mcp-channel" }
+    { "path": "../../packages/mcp-channel" },
+    { "path": "../../packages/http" }
   ]
 }
