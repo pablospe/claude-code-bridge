@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { rm } from "node:fs/promises";
-import { mockSupervisorFactory } from "@ccb/claude-code";
-import { Bridge } from "@ccb/core";
+import { MockSupervisor, mockSupervisorFactory } from "@ccb/claude-code";
+import { Bridge, type Supervisor, type SupervisorContext } from "@ccb/core";
 import { SessionPool } from "./pool.ts";
 import { startApiServer } from "./server.ts";
 
@@ -73,6 +73,64 @@ describe("POST /v1/chat/completions", () => {
     expect(contents.join("")).toContain("marco");
     const finals = parsed.filter((c) => c.choices[0].finish_reason !== null);
     expect(finals).toHaveLength(1);
+  });
+
+  test("a crashed session is retried once on a fresh session", async () => {
+    // The first session's supervisor emits session.ended{reason:"crash"} on
+    // sendMessage, so runTurn rejects "session ended mid-turn: crash" and the
+    // pool respawns session 2 (a MockSupervisor). The server must retry the
+    // request on the respawned session and succeed.
+    let started = 0;
+    const crashBridge = new Bridge({
+      storeDir: `${storeDir}-crash`,
+      supervisorFactory: (): Supervisor => {
+        started += 1;
+        if (started === 1) {
+          let ctx: SupervisorContext | undefined;
+          return {
+            async start(c) {
+              ctx = c;
+            },
+            async sendMessage() {
+              if (!ctx) throw new Error("supervisor not started");
+              ctx.emit({ type: "session.ended", sessionId: ctx.sessionId, reason: "crash" });
+            },
+            async interrupt() {},
+            async clear() {},
+            async close() {},
+          };
+        }
+        return new MockSupervisor();
+      },
+    });
+    const crashPool = new SessionPool({ bridge: crashBridge, size: 1 });
+    await crashPool.start();
+    const crashServer = await startApiServer({
+      pool: crashPool,
+      host: "127.0.0.1",
+      port: 0,
+      turnTimeoutMs: 10_000,
+    });
+    try {
+      const res = await fetch(`${crashServer.url}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "ccb-claude",
+          messages: [{ role: "user", content: "marco" }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        choices: Array<{ message: { content: string } }>;
+      };
+      expect(body.choices[0]?.message.content).toContain("marco");
+      expect(started).toBe(2);
+    } finally {
+      await crashServer.stop();
+      await crashPool.close();
+      await rm(`${storeDir}-crash`, { recursive: true, force: true });
+    }
   });
 
   test("invalid body is a 400 in OpenAI error shape", async () => {

@@ -3,9 +3,43 @@ import { renderTranscript } from "./renderer.ts";
 import { buildChunk, buildCompletion, newCompletionId } from "./response.ts";
 import type { SessionPool } from "./pool.ts";
 import { parseReply } from "./tool-call-parser.ts";
-import { runTurn } from "./turn.ts";
+import { runTurn, type TurnResult } from "./turn.ts";
 
 export const FACADE_MODEL_ID = "ccb-claude";
+
+/**
+ * Crash-shaped turn failures are retried once on a fresh session (the pool
+ * already replaced the crashed one). Timeouts and other errors are not
+ * retried; a streaming turn that already emitted deltas is not retried
+ * either, since the client has observed partial output.
+ */
+const RETRYABLE_TURN_ERROR = /session ended mid-turn|session is closing|unknown session/;
+
+async function runPoolTurn(
+  pool: SessionPool,
+  prompt: string,
+  timeoutMs: number,
+  onDelta?: (delta: string) => void,
+): Promise<TurnResult> {
+  let emitted = false;
+  const wrapped = onDelta
+    ? (delta: string) => {
+        emitted = true;
+        onDelta(delta);
+      }
+    : undefined;
+  const attempt = () =>
+    pool.withSession((sessionId) =>
+      runTurn({ bridge: pool.bridge, sessionId, prompt, timeoutMs, onDelta: wrapped }),
+    );
+  try {
+    return await attempt();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (emitted || !RETRYABLE_TURN_ERROR.test(message)) throw err;
+    return await attempt();
+  }
+}
 
 export interface ApiServerOptions {
   readonly pool: SessionPool;
@@ -65,9 +99,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
 
     if (!request.stream) {
       try {
-        const result = await pool.withSession((sessionId) =>
-          runTurn({ bridge: pool.bridge, sessionId, prompt, timeoutMs: turnTimeoutMs }),
-        );
+        const result = await runPoolTurn(pool, prompt, turnTimeoutMs);
         const parsed = parseReply(result.content);
         return Response.json(buildCompletion({ model: request.model, prompt, parsed }));
       } catch (err) {
@@ -85,22 +117,14 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
         try {
           let sentRole = false;
-          const result = await pool.withSession((sessionId) =>
-            runTurn({
-              bridge: pool.bridge,
-              sessionId,
-              prompt,
-              timeoutMs: turnTimeoutMs,
-              onDelta: (delta) => {
-                if (buffered) return; // tool turns are buffered until parseable
-                if (!sentRole) {
-                  sentRole = true;
-                  send(buildChunk({ id, model: request.model, delta: { role: "assistant" } }));
-                }
-                send(buildChunk({ id, model: request.model, delta: { content: delta } }));
-              },
-            }),
-          );
+          const result = await runPoolTurn(pool, prompt, turnTimeoutMs, (delta) => {
+            if (buffered) return; // tool turns are buffered until parseable
+            if (!sentRole) {
+              sentRole = true;
+              send(buildChunk({ id, model: request.model, delta: { role: "assistant" } }));
+            }
+            send(buildChunk({ id, model: request.model, delta: { content: delta } }));
+          });
           const parsed = parseReply(result.content);
           if (parsed.kind === "tool_calls") {
             send(
