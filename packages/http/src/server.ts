@@ -1,3 +1,4 @@
+import { anthropicError, handleAnthropicMessages } from "./anthropic-route.ts";
 import { validateChatRequest } from "./openai-types.ts";
 import type { SessionPool } from "./pool.ts";
 import { renderTranscript } from "./renderer.ts";
@@ -15,7 +16,7 @@ export const FACADE_MODEL_ID = "ccb-claude";
  */
 const RETRYABLE_TURN_ERROR = /session ended mid-turn|session is closing|unknown session/;
 
-async function runPoolTurn(
+export async function runPoolTurn(
   pool: SessionPool,
   prompt: string,
   timeoutMs: number,
@@ -54,11 +55,11 @@ export interface ApiServerHandle {
   stop(): Promise<void>;
 }
 
-function errorResponse(status: number, type: string, message: string): Response {
+export function errorResponse(status: number, type: string, message: string): Response {
   return Response.json({ error: { message, type, param: null, code: null } }, { status });
 }
 
-const IGNORED_PARAMS = [
+const OPENAI_IGNORED_PARAMS = [
   "temperature",
   "top_p",
   "max_tokens",
@@ -69,8 +70,9 @@ const IGNORED_PARAMS = [
 ];
 const warnedParams = new Set<string>();
 
-function warnIgnoredParams(body: Record<string, unknown>): void {
-  for (const p of IGNORED_PARAMS) {
+/** Warn once per process for each unsupported parameter present in the body. */
+export function warnIgnored(params: ReadonlyArray<string>, body: Record<string, unknown>): void {
+  for (const p of params) {
     if (body[p] !== undefined && !warnedParams.has(p)) {
       warnedParams.add(p);
       console.error(`ccb api: ignoring unsupported parameter '${p}' (logged once)`);
@@ -92,7 +94,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     if (!validated.ok) {
       return errorResponse(400, "invalid_request_error", validated.error);
     }
-    warnIgnoredParams(raw as Record<string, unknown>);
+    warnIgnored(OPENAI_IGNORED_PARAMS, raw as Record<string, unknown>);
     const request = validated.value;
     const prompt = renderTranscript(request.messages, request.tools, request.tool_choice);
     const buffered = request.tools.length > 0 && request.tool_choice !== "none";
@@ -181,13 +183,20 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     port: options.port,
     idleTimeout: 0,
     async fetch(req: Request): Promise<Response> {
+      const url = new URL(req.url);
       if (apiKey !== undefined) {
+        // Anthropic clients send `x-api-key`; OpenAI clients send `Authorization:
+        // Bearer`. Accept either.
         const auth = req.headers.get("authorization");
-        if (auth !== `Bearer ${apiKey}`) {
+        const xApiKey = req.headers.get("x-api-key");
+        if (auth !== `Bearer ${apiKey}` && xApiKey !== apiKey) {
+          // Route the rejection shape by path so each dialect sees its own envelope.
+          if (url.pathname === "/v1/messages") {
+            return anthropicError(401, "authentication_error", "invalid or missing API key");
+          }
           return errorResponse(401, "authentication_error", "invalid or missing API key");
         }
       }
-      const url = new URL(req.url);
       if (req.method === "GET" && url.pathname === "/v1/models") {
         return Response.json({
           object: "list",
@@ -196,6 +205,9 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       }
       if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
         return handleCompletions(req);
+      }
+      if (req.method === "POST" && url.pathname === "/v1/messages") {
+        return handleAnthropicMessages(req, pool, turnTimeoutMs);
       }
       return errorResponse(404, "invalid_request_error", `unknown route: ${url.pathname}`);
     },
