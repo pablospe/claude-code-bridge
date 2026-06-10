@@ -1,11 +1,12 @@
 # Anthropic-dialect smoke: ccb api consumed through the official anthropic SDK.
 # Assumes ccb api started WITHOUT --api-key (the "ccb" placeholder is ignored then).
 # Run: see docs/SMOKE.md "OpenAI facade" section.
+import os
 import sys
 
 from anthropic import Anthropic
 
-BASE = "http://127.0.0.1:18485"
+BASE = os.getenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:18485")
 
 
 def main() -> int:

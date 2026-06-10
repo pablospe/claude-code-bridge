@@ -423,5 +423,22 @@ describe("validateAnthropicRequest — translation", () => {
       });
       expect(r.ok).toBe(false);
     });
+    test("tool with empty/missing name rejected, error mentions name", () => {
+      const r = validateAnthropicRequest({
+        model: "m",
+        messages: [{ role: "user", content: "h" }],
+        tools: [{}],
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain("name");
+    });
+    test("null tool element rejected", () => {
+      const r = validateAnthropicRequest({
+        model: "m",
+        messages: [{ role: "user", content: "h" }],
+        tools: [null],
+      });
+      expect(r.ok).toBe(false);
+    });
   });
 });

@@ -39,7 +39,7 @@ export type Validated<T> = { ok: true; value: T } | { ok: false; error: string }
 
 const ROLES = new Set(["system", "user", "assistant", "tool"]);
 const TOOL_CHOICE_LITERALS = new Set(["auto", "none", "required"]);
-const FUNCTION_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+export const FUNCTION_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
 /**
  * Parse the optional `tool_choice` field. Accepts the three string literals
@@ -90,6 +90,13 @@ export function validateChatRequest(body: unknown): Validated<ChatRequest> {
   if (!toolChoice.ok) {
     return { ok: false, error: toolChoice.error };
   }
+  if (Array.isArray(b.tools)) {
+    for (const t of b.tools) {
+      if (typeof t !== "object" || t === null) {
+        return { ok: false, error: "every tool must be an object" };
+      }
+    }
+  }
   const tools: ReadonlyArray<ToolDef> = Array.isArray(b.tools)
     ? (b.tools as ReadonlyArray<ToolDef>)
     : [];
@@ -112,7 +119,7 @@ export function validateChatRequest(body: unknown): Validated<ChatRequest> {
         error: `tool_choice function name '${name}' must match ${FUNCTION_NAME_PATTERN.source}`,
       };
     }
-    if (!tools.some((t) => t.function?.name === name)) {
+    if (!tools.some((t) => t?.function?.name === name)) {
       return { ok: false, error: `tool_choice function '${name}' is not present in tools` };
     }
   }

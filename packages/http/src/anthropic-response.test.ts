@@ -12,6 +12,7 @@ import {
   textBlockStartEvent,
   textDeltaEvent,
   toolUseBlockStartEvent,
+  toolUseInput,
 } from "./anthropic-response.ts";
 import { estimateTokens } from "./response.ts";
 
@@ -74,6 +75,30 @@ describe("buildAnthropicMessage", () => {
     expect(r.content[0]).toEqual({ type: "tool_use", id: "c", name: "f", input: {} });
   });
 
+  test("tool_use input must be a plain object: string args fall back to {}", () => {
+    const r = buildAnthropicMessage({
+      model: "m",
+      prompt: "p",
+      parsed: {
+        kind: "tool_calls",
+        calls: [{ id: "c", type: "function", function: { name: "f", arguments: '"abc"' } }],
+      },
+    });
+    expect(r.content[0]).toEqual({ type: "tool_use", id: "c", name: "f", input: {} });
+  });
+
+  test("tool_use input must be a plain object: array args fall back to {}", () => {
+    const r = buildAnthropicMessage({
+      model: "m",
+      prompt: "p",
+      parsed: {
+        kind: "tool_calls",
+        calls: [{ id: "c", type: "function", function: { name: "f", arguments: "[1]" } }],
+      },
+    });
+    expect(r.content[0]).toEqual({ type: "tool_use", id: "c", name: "f", input: {} });
+  });
+
   test("output_tokens for tool_calls estimated over emitted content blocks", () => {
     const calls = [
       { id: "c", type: "function" as const, function: { name: "f", arguments: '{"x":1}' } },
@@ -84,6 +109,24 @@ describe("buildAnthropicMessage", () => {
       parsed: { kind: "tool_calls", calls },
     });
     expect(r.usage.output_tokens).toBe(estimateTokens(JSON.stringify(r.content)));
+  });
+});
+
+describe("toolUseInput", () => {
+  test("object JSON passes through", () => {
+    expect(toolUseInput('{"x":1}')).toEqual({ x: 1 });
+  });
+  test("string JSON falls back to {}", () => {
+    expect(toolUseInput('"abc"')).toEqual({});
+  });
+  test("array JSON falls back to {}", () => {
+    expect(toolUseInput("[1]")).toEqual({});
+  });
+  test("null JSON falls back to {}", () => {
+    expect(toolUseInput("null")).toEqual({});
+  });
+  test("invalid JSON falls back to {}", () => {
+    expect(toolUseInput("not json")).toEqual({});
   });
 });
 

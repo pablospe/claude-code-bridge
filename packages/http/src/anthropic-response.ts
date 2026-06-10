@@ -26,13 +26,22 @@ export function newAnthropicMessageId(): string {
   return `msg_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
-/** Defensive JSON parse for tool-call arguments; falls back to {} on error. */
-function parseArguments(args: string): unknown {
+/**
+ * Parse tool-call arguments JSON into a plain object for a tool_use block's
+ * `input`. Anthropic requires `input` to be an object; any non-object result
+ * (string, array, null) or parse error falls back to {}.
+ */
+export function toolUseInput(argumentsJson: string): Record<string, unknown> {
+  let parsed: unknown;
   try {
-    return JSON.parse(args);
+    parsed = JSON.parse(argumentsJson);
   } catch {
     return {};
   }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return {};
+  }
+  return parsed as Record<string, unknown>;
 }
 
 export function buildAnthropicMessage(input: {
@@ -48,7 +57,7 @@ export function buildAnthropicMessage(input: {
           type: "tool_use",
           id: c.id,
           name: c.function.name,
-          input: parseArguments(c.function.arguments),
+          input: toolUseInput(c.function.arguments),
         }));
   const completionText = parsed.kind === "text" ? parsed.content : JSON.stringify(content);
   return {
@@ -65,8 +74,6 @@ export function buildAnthropicMessage(input: {
     },
   };
 }
-
-// --- SSE framing helpers ---------------------------------------------------
 
 export function sseEvent(type: string, data: unknown): string {
   return `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;

@@ -55,7 +55,7 @@ export interface ApiServerHandle {
   stop(): Promise<void>;
 }
 
-export function errorResponse(status: number, type: string, message: string): Response {
+function errorResponse(status: number, type: string, message: string): Response {
   return Response.json({ error: { message, type, param: null, code: null } }, { status });
 }
 

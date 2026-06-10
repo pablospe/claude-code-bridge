@@ -11,6 +11,7 @@ import {
   textBlockStartEvent,
   textDeltaEvent,
   toolUseBlockStartEvent,
+  toolUseInput,
 } from "./anthropic-response.ts";
 import { validateAnthropicRequest } from "./anthropic-types.ts";
 import type { SessionPool } from "./pool.ts";
@@ -75,11 +76,11 @@ export async function handleAnthropicMessages(
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const send = (frame: string) => controller.enqueue(encoder.encode(frame));
+      // Non-buffered text path streams deltas; buffered tool path holds until parse.
+      let textStarted = false;
       try {
         send(messageStartEvent(id, request.model, estimateTokens(prompt)));
 
-        // Non-buffered text path streams deltas; buffered tool path holds until parse.
-        let textStarted = false;
         const onDelta = buffered
           ? undefined
           : (delta: string) => {
@@ -98,14 +99,14 @@ export async function handleAnthropicMessages(
             ? { kind: "text" as const, content: result.content }
             : parseReply(result.content);
 
-        // Reuse buildAnthropicMessage's usage measurement for output tokens.
+        // Output tokens are measured from the fully-assembled content blocks.
         const message = buildAnthropicMessage({ model: request.model, prompt, parsed });
         const outTokens = message.usage.output_tokens;
 
         if (parsed.kind === "tool_calls") {
           parsed.calls.forEach((call, i) => {
             send(toolUseBlockStartEvent(i, call.id, call.function.name));
-            send(inputJsonDeltaEvent(i, call.function.arguments));
+            send(inputJsonDeltaEvent(i, JSON.stringify(toolUseInput(call.function.arguments))));
             send(blockStopEvent(i));
           });
           send(messageDeltaEvent("tool_use", outTokens));
@@ -123,6 +124,9 @@ export async function handleAnthropicMessages(
         controller.close();
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        // Close any open text block so the client sees a well-formed block
+        // before the terminal error frame.
+        if (textStarted) send(blockStopEvent(0));
         send(sseEvent("error", { type: "error", error: { type: "api_error", message } }));
         controller.close();
       }

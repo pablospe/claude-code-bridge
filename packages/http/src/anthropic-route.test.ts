@@ -393,6 +393,97 @@ describe("POST /v1/messages", () => {
     }
   });
 
+  test("mid-stream crash after a partial text delta closes the open block before the error frame", async () => {
+    // A non-final prose reply streams a text delta (opening a content block),
+    // then the session crashes. The route must close the open block
+    // (content_block_stop) before emitting the error frame, and must not emit
+    // message_stop.
+    const bridge = new Bridge({
+      storeDir: `${storeDir}-mid-crash`,
+      supervisorFactory: () =>
+        new ScriptedSupervisor((ctx) => {
+          ctx.emit({
+            type: "agent.reply",
+            sessionId: ctx.sessionId,
+            content: "partial",
+            final: false,
+          });
+          ctx.emit({ type: "session.ended", sessionId: ctx.sessionId, reason: "crash" });
+        }),
+    });
+    const p = new SessionPool({ bridge, size: 1 });
+    await p.start();
+    const s = await startApiServer({ pool: p, host: "127.0.0.1", port: 0, turnTimeoutMs: 10_000 });
+    try {
+      const res = await fetch(`${s.url}/v1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "ccb-claude",
+          max_tokens: 1024,
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      const events = parseSse(await res.text());
+      const types = events.map((e) => e.event);
+
+      const errorIdx = types.indexOf("error");
+      expect(errorIdx).toBeGreaterThan(-1);
+
+      // The open text block is closed BEFORE the error frame.
+      const startIdx = types.indexOf("content_block_start");
+      const deltaIdx = types.findIndex(
+        (t, i) =>
+          t === "content_block_delta" &&
+          (events[i]?.data as { delta: { type: string } }).delta.type === "text_delta",
+      );
+      const stopIdx = types.indexOf("content_block_stop");
+      expect(startIdx).toBeGreaterThan(-1);
+      expect(deltaIdx).toBeGreaterThan(startIdx);
+      expect(stopIdx).toBeGreaterThan(deltaIdx);
+      expect(stopIdx).toBeLessThan(errorIdx);
+
+      // No message_stop on the error path.
+      expect(types).not.toContain("message_stop");
+    } finally {
+      await s.stop();
+      await p.close();
+      await rm(`${storeDir}-mid-crash`, { recursive: true, force: true });
+    }
+  });
+
+  test("streaming tool input partial_json parses to an object", async () => {
+    const srv = await scriptedServer("tool-stream-objinput", TOOL_REPLY);
+    try {
+      const res = await fetch(`${srv.url}/v1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "ccb-claude",
+          max_tokens: 1024,
+          stream: true,
+          messages: [{ role: "user", content: "weather in Paris?" }],
+          tools: [{ name: "get_weather", input_schema: { type: "object" } }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      const events = parseSse(await res.text());
+      const jsonDelta = events.find(
+        (e) =>
+          e.event === "content_block_delta" &&
+          (e.data as { delta: { type: string } }).delta.type === "input_json_delta",
+      )?.data as { delta: { partial_json: string } };
+      const parsed = JSON.parse(jsonDelta.delta.partial_json);
+      expect(typeof parsed).toBe("object");
+      expect(Array.isArray(parsed)).toBe(false);
+      expect(parsed).not.toBeNull();
+    } finally {
+      await srv.cleanup();
+    }
+  });
+
   test("agent.done-only turn opens and closes an empty text block", async () => {
     const bridge = new Bridge({
       storeDir: `${storeDir}-done-only`,

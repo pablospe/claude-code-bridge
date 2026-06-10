@@ -1,5 +1,12 @@
 // packages/http/src/anthropic-types.ts
-import type { ChatMessage, ToolCall, ToolChoice, ToolDef, Validated } from "./openai-types.ts";
+import {
+  type ChatMessage,
+  FUNCTION_NAME_PATTERN,
+  type ToolCall,
+  type ToolChoice,
+  type ToolDef,
+  type Validated,
+} from "./openai-types.ts";
 
 /**
  * Translated Anthropic request expressed in the facade's INTERNAL shapes, so
@@ -14,7 +21,6 @@ export interface TranslatedRequest {
 }
 
 const ANTHROPIC_ROLES = new Set(["user", "assistant", "system"]);
-const FUNCTION_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
 /** Join an Anthropic text-block array (or a bare string) into plain text. */
 function blocksToText(content: unknown): string {
@@ -78,17 +84,28 @@ function parseAnthropicToolChoice(value: unknown): Validated<ToolChoice> {
 }
 
 /** Translate Anthropic `tools` into internal function tool defs. */
-function translateTools(rawTools: unknown): ReadonlyArray<ToolDef> {
-  if (!Array.isArray(rawTools)) return [];
-  return rawTools.map((t) => {
-    const o = (typeof t === "object" && t !== null ? t : {}) as Record<string, unknown>;
+function translateTools(rawTools: unknown): Validated<ReadonlyArray<ToolDef>> {
+  if (!Array.isArray(rawTools)) return { ok: true, value: [] };
+  const out: ToolDef[] = [];
+  for (const t of rawTools) {
+    if (typeof t !== "object" || t === null) {
+      return { ok: false, error: "every tool must be an object" };
+    }
+    const o = t as Record<string, unknown>;
+    if (typeof o.name !== "string" || !FUNCTION_NAME_PATTERN.test(o.name)) {
+      return {
+        ok: false,
+        error: `every tool needs a 'name' matching ${FUNCTION_NAME_PATTERN.source}`,
+      };
+    }
     const fn: ToolDef["function"] = {
-      name: typeof o.name === "string" ? o.name : "",
+      name: o.name,
       ...(typeof o.description === "string" ? { description: o.description } : {}),
       ...(o.input_schema !== undefined ? { parameters: o.input_schema } : {}),
     };
-    return { type: "function", function: fn };
-  });
+    out.push({ type: "function", function: fn });
+  }
+  return { ok: true, value: out };
 }
 
 /**
@@ -180,7 +197,7 @@ export function validateAnthropicRequest(body: unknown): Validated<TranslatedReq
     }
     const role = (m as Record<string, unknown>).role;
     if (typeof role !== "string" || !ANTHROPIC_ROLES.has(role)) {
-      return { ok: false, error: "every message needs a role of user|assistant" };
+      return { ok: false, error: "every message needs a role of user|assistant|system" };
     }
   }
 
@@ -188,7 +205,11 @@ export function validateAnthropicRequest(body: unknown): Validated<TranslatedReq
   if (!toolChoice.ok) {
     return { ok: false, error: toolChoice.error };
   }
-  const tools = translateTools(b.tools);
+  const translatedTools = translateTools(b.tools);
+  if (!translatedTools.ok) {
+    return { ok: false, error: translatedTools.error };
+  }
+  const tools = translatedTools.value;
 
   // Cross-field checks mirroring validateChatRequest.
   const choice = toolChoice.value;

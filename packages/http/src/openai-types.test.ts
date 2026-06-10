@@ -157,4 +157,15 @@ describe("validateChatRequest", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("tool_choice");
   });
+
+  test("rejects a tools array with a null element (400, not a crash)", () => {
+    const r = validateChatRequest({
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [null],
+      tool_choice: { type: "function", function: { name: "extract" } },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("every tool must be an object");
+  });
 });
