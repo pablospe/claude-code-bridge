@@ -13,7 +13,7 @@ interface RawCall {
 function asRawCall(v: unknown): RawCall | undefined {
   if (typeof v !== "object" || v === null) return undefined;
   const o = v as Record<string, unknown>;
-  if (typeof o.name !== "string") return undefined;
+  if (typeof o.name !== "string" || o.name.length === 0) return undefined;
   return { name: o.name, arguments: o.arguments ?? {} };
 }
 
@@ -21,13 +21,20 @@ function toToolCall(raw: RawCall): ToolCall {
   return {
     id: `call_${crypto.randomUUID().slice(0, 8)}`,
     type: "function",
-    function: { name: raw.name, arguments: JSON.stringify(raw.arguments) },
+    function: {
+      name: raw.name,
+      arguments:
+        typeof raw.arguments === "string" ? raw.arguments : JSON.stringify(raw.arguments),
+    },
   };
 }
 
 /**
  * Extract the prompted tool-call protocol from a final reply. Degrades to
  * text on any mismatch — the facade never errors on an unparseable reply.
+ *
+ * For a `tool_calls` array, every entry must parse: if any entry is invalid
+ * the whole reply degrades to text rather than silently dropping entries.
  */
 export function parseReply(reply: string): ParsedReply {
   const fenced = reply.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
@@ -48,7 +55,8 @@ export function parseReply(reply: string): ParsedReply {
   } else if (Array.isArray(o.tool_calls)) {
     for (const c of o.tool_calls) {
       const one = asRawCall(c);
-      if (one) raws.push(one);
+      if (!one) return { kind: "text", content: reply };
+      raws.push(one);
     }
   }
   if (raws.length === 0) return { kind: "text", content: reply };
