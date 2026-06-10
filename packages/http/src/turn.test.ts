@@ -1,8 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import { mockSupervisorFactory } from "@ccb/claude-code";
-import { Bridge } from "@ccb/core";
+import { Bridge, type Supervisor } from "@ccb/core";
 import { runTurn } from "./turn.ts";
+
+// A supervisor that never emits a terminal event, so the turn timeout always
+// wins. This makes the timeout assertion deterministic.
+class SilentSupervisor implements Supervisor {
+  async start(): Promise<void> {}
+  async sendMessage(): Promise<void> {}
+  async interrupt(): Promise<void> {}
+  async close(): Promise<void> {}
+}
 
 const storeDir = `/tmp/ccb-turn-test-${crypto.randomUUID()}`;
 afterEach(async () => {
@@ -28,17 +37,11 @@ describe("runTurn", () => {
   });
 
   test("times out when no terminal event arrives", async () => {
-    const bridge = new Bridge({ storeDir, supervisorFactory: mockSupervisorFactory() });
+    const bridge = new Bridge({ storeDir, supervisorFactory: () => new SilentSupervisor() });
     const { id } = await bridge.startSession({});
-    // The mock will answer "ping", but with timeoutMs: 1 the timer races the
-    // echo chain. Forcing the timer to win deterministically is flaky, so
-    // assert the error message "either way": if the turn rejects it must be
-    // the timeout error.
-    try {
-      await runTurn({ bridge, sessionId: id, prompt: "ping", timeoutMs: 1 });
-    } catch (err) {
-      expect((err as Error).message).toMatch(/turn timed out/);
-    }
+    await expect(
+      runTurn({ bridge, sessionId: id, prompt: "ping", timeoutMs: 50 }),
+    ).rejects.toThrow(/turn timed out after 50ms/);
     await bridge.close(id);
   });
 });
