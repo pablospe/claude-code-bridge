@@ -3,7 +3,7 @@ import { renderTranscript } from "./renderer.ts";
 import { buildChunk, buildCompletion, newCompletionId } from "./response.ts";
 import type { SessionPool } from "./pool.ts";
 import { parseReply } from "./tool-call-parser.ts";
-import { runTurn, type TurnResult } from "./turn.ts";
+import { runTurn, TurnTimeoutError, type TurnResult } from "./turn.ts";
 
 export const FACADE_MODEL_ID = "ccb-claude";
 
@@ -104,7 +104,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         return Response.json(buildCompletion({ model: request.model, prompt, parsed }));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        const status = message.includes("timed out") ? 504 : 500;
+        const status = err instanceof TurnTimeoutError ? 504 : 500;
         return errorResponse(status, "server_error", message);
       }
     }

@@ -1,5 +1,13 @@
 import type { ClaudeCodeBridge } from "@ccb/core";
 
+/** Thrown when a turn exceeds its time budget without a terminal event. */
+export class TurnTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`turn timed out after ${timeoutMs}ms`);
+    this.name = "TurnTimeoutError";
+  }
+}
+
 export interface RunTurnOptions {
   readonly bridge: ClaudeCodeBridge;
   readonly sessionId: string;
@@ -57,7 +65,7 @@ export async function runTurn(options: RunTurnOptions): Promise<TurnResult> {
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`turn timed out after ${timeoutMs}ms`)), timeoutMs);
+    timer = setTimeout(() => reject(new TurnTimeoutError(timeoutMs)), timeoutMs);
   });
   try {
     return await Promise.race([turn, timeout]);
