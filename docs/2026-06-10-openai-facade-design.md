@@ -173,7 +173,6 @@ before `[DONE]`.
 - `--port` (default 18485), `--host` (default 127.0.0.1)
 - `--pool-size` (default 1)
 - `--turn-timeout-ms` (default 300000)
-- `--cwd` (working directory the sessions are anchored to)
 - `--api-key` (optional shared secret)
 
 ## Testing (outside-in TDD)

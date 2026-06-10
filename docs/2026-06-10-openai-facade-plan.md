@@ -1,5 +1,7 @@
 # OpenAI-Compatible Facade Implementation Plan
 
+> **Superseded in part:** Task 8's --safe-mode cleanSession design was invalidated by the real-claude smokes; the implemented behavior is the user-tier exclusion recorded in docs/2026-06-10-openai-facade-design.md ("Clean session launch") and docs/SMOKE.md (Smoke 1). The task text below is preserved as written for the historical record.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Expose a warm interactive Claude Code session pool as an OpenAI-compatible HTTP API (`packages/http` + `ccb api`) so LiteLLM can use it with zero LiteLLM changes.

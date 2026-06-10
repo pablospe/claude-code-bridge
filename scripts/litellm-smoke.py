@@ -4,6 +4,7 @@ import sys
 
 import litellm
 
+# Assumes ccb api started WITHOUT --api-key (the "ccb" placeholder is ignored then).
 BASE = "http://127.0.0.1:18485/v1"
 
 
