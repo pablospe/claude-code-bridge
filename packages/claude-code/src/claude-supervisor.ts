@@ -87,6 +87,20 @@ export interface ClaudeCodeSupervisorOptions {
    * visibility (see docs/M3.md).
    */
   readonly hooks?: { readonly events: ReadonlyArray<HookEvent> };
+  /**
+   * Launch the driven session with --safe-mode: no operator plugins, hooks,
+   * MCP servers, skills, CLAUDE.md, or auto-memory. Requires claude >= 2.1.169
+   * and dev-flag channels (the channel arrives via --mcp-config; in plugin
+   * mode safe-mode would sever the channel itself). Replaces the
+   * --setting-sources/--disable-slash-commands trim (slash commands must stay
+   * available for clear()).
+   */
+  readonly cleanSession?: boolean;
+  /**
+   * Disallow claude's own built-in tools so the session can only answer via
+   * the bridge tools — it behaves like a bare model rather than an agent.
+   */
+  readonly rawModel?: boolean;
 }
 
 /**
@@ -163,6 +177,9 @@ const AUTO_CONFIRM_BUFFER_MAX = Math.max(4096, DEV_CHANNELS_CONFIRM_HINT.length 
 
 const ALLOWED_TOOLS = "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done";
 
+const DISALLOWED_BUILTIN_TOOLS =
+  "Bash Edit Write Read Glob Grep WebFetch WebSearch Task NotebookEdit TodoWrite";
+
 /**
  * Resolve the absolute path to `packages/mcp-channel/src/bin.ts` so the
  * generated `.mcp.json` does not depend on PATH lookups for `bunx
@@ -202,6 +219,8 @@ export class ClaudeCodeSupervisor implements Supervisor {
   readonly #launcherFactory: LauncherFactory;
   readonly #writeFile: WriteFileFn;
   readonly #hooks: { readonly events: ReadonlyArray<HookEvent> } | undefined;
+  readonly #cleanSession: boolean;
+  readonly #rawModel: boolean;
 
   #ctx: SupervisorContext | undefined;
   #server: ControlServer | undefined;
@@ -224,6 +243,11 @@ export class ClaudeCodeSupervisor implements Supervisor {
       options.launcherFactory ?? ((cmd, args, opts) => defaultLaunch(cmd, [...args], opts));
     this.#writeFile = options.writeFile ?? writeFile;
     this.#hooks = options.hooks;
+    this.#cleanSession = options.cleanSession ?? false;
+    this.#rawModel = options.rawModel ?? false;
+    if (this.#cleanSession && this.#channels === "plugin") {
+      throw new Error("cleanSession requires dev-flag channels");
+    }
   }
 
   /**
@@ -387,6 +411,20 @@ export class ClaudeCodeSupervisor implements Supervisor {
     launcher.sendSignal("SIGINT");
   }
 
+  async clear(sessionId: string): Promise<void> {
+    const launcher = this.#launcher;
+    if (!this.#ctx || !launcher) throw new Error("supervisor not started");
+    if (sessionId !== this.#ctx.sessionId) {
+      throw new Error(`unknown session: ${sessionId}`);
+    }
+    // Escape first dismisses any transient UI state (autocomplete popup,
+    // half-typed text); the pool only clears idle sessions so the input box
+    // is otherwise empty.
+    launcher.write("\x1b");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    launcher.write("/clear\r");
+  }
+
   async close(_sessionId: string): Promise<void> {
     this.#autoConfirmCleanup?.();
     this.#autoConfirmCleanup = undefined;
@@ -443,8 +481,14 @@ export class ClaudeCodeSupervisor implements Supervisor {
       // so dropping the user tier doesn't cut off the channel. (Plugin mode
       // resolves the ccb plugin THROUGH the user-tier marketplace, so the same
       // exclusion would break it — hence this stays out of the plugin branch.)
-      args.push("--setting-sources", "project,local");
-      args.push("--disable-slash-commands");
+      if (this.#cleanSession) {
+        // --safe-mode supersedes the user-tier trim AND keeps /clear usable
+        // (--disable-slash-commands would block the clear() injection).
+        args.push("--safe-mode");
+      } else {
+        args.push("--setting-sources", "project,local");
+        args.push("--disable-slash-commands");
+      }
     } else {
       // Plugin mode: the channel server is declared by the plugin's
       // mcpServers entry, which claude loads from the plugin's manifest.
@@ -460,6 +504,9 @@ export class ClaudeCodeSupervisor implements Supervisor {
       args.push("--settings", this.#settingsPath);
     }
     args.push("--allowed-tools", ALLOWED_TOOLS);
+    if (this.#rawModel) {
+      args.push("--disallowed-tools", DISALLOWED_BUILTIN_TOOLS);
+    }
     return args;
   }
 
