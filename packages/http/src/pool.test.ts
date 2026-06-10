@@ -74,4 +74,77 @@ describe("SessionPool", () => {
     expect(supervisors.length).toBe(2);
     await pool.close();
   });
+
+  test("close() rejects queued waiters instead of stranding them", async () => {
+    const bridge = makeBridge([]);
+    const pool = new SessionPool({ bridge, size: 1 });
+    await pool.start();
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    // Occupy the only session with a gated turn.
+    const first = pool.withSession(async () => {
+      await gate;
+    });
+    // Let the first turn acquire the session before queuing the second.
+    await new Promise((r) => setTimeout(r, 20));
+    // This second turn has no session available and queues as a waiter.
+    // Capture its outcome synchronously so the rejection is always handled,
+    // even though close() rejects it before we await below.
+    const secondError = pool
+      .withSession(async () => {})
+      .then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+    await pool.close();
+    expect(String(await secondError)).toMatch(/pool is closed/);
+    releaseFirst();
+    await first;
+  });
+
+  test("respawn failure rejects queued waiters", async () => {
+    const supervisors: MockSupervisor[] = [];
+    const bridge = makeBridge(supervisors);
+    // Reject startSession after the initial pool warm-up so the post-crash
+    // respawn fails.
+    let startCalls = 0;
+    const realStart = bridge.startSession.bind(bridge);
+    bridge.startSession = ((options) => {
+      startCalls += 1;
+      if (startCalls > 1) {
+        return Promise.reject(new Error("startSession boom"));
+      }
+      return realStart(options);
+    }) as typeof bridge.startSession;
+
+    const pool = new SessionPool({ bridge, size: 1 });
+    await pool.start();
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    // First turn holds the session, then crashes it once the gate opens.
+    const first = pool.withSession(async () => {
+      await gate;
+      supervisors[0]?.triggerCrash();
+      throw new Error("turn failed: session crashed");
+    });
+    // Let the first turn acquire the session before queuing the second.
+    await new Promise((r) => setTimeout(r, 20));
+    // Second turn queues as a waiter; the failed respawn must reject it.
+    // Capture its outcome synchronously so the rejection is always handled,
+    // even though the respawn failure rejects it before we await below.
+    const secondError = pool
+      .withSession(async () => {})
+      .then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+    releaseFirst();
+    await expect(first).rejects.toThrow("turn failed");
+    expect(String(await secondError)).toMatch(/respawn failed/);
+    await pool.close();
+  });
 });

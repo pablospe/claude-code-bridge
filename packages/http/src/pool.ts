@@ -5,17 +5,26 @@ export interface SessionPoolOptions {
   readonly size: number;
 }
 
+interface Waiter {
+  readonly resolve: (sessionId: string) => void;
+  readonly reject: (err: Error) => void;
+}
+
 /**
  * Fixed-size pool of warm bridge sessions. One in-flight turn per session;
  * excess callers queue FIFO. Every turn gets a cleared session. A turn that
  * throws is assumed to have poisoned its session: the session is closed
  * (best effort) and replaced with a fresh one before the next waiter runs.
+ *
+ * A failed respawn rejects all queued waiters and shrinks the pool, so callers
+ * fail fast instead of hanging on a session that will never come. close()
+ * likewise rejects any queued waiters.
  */
 export class SessionPool {
   readonly #bridge: ClaudeCodeBridge;
   readonly #size: number;
   readonly #idle: string[] = [];
-  readonly #waiters: Array<(sessionId: string) => void> = [];
+  readonly #waiters: Waiter[] = [];
   #closed = false;
 
   constructor(options: SessionPoolOptions) {
@@ -52,6 +61,9 @@ export class SessionPool {
 
   async close(): Promise<void> {
     this.#closed = true;
+    for (const waiter of this.#waiters.splice(0)) {
+      waiter.reject(new Error("pool is closed"));
+    }
     const ids = this.#idle.splice(0);
     await Promise.allSettled(ids.map((id) => this.#bridge.close(id)));
   }
@@ -59,14 +71,14 @@ export class SessionPool {
   #acquire(): Promise<string> {
     const id = this.#idle.shift();
     if (id !== undefined) return Promise.resolve(id);
-    return new Promise((resolve) => {
-      this.#waiters.push(resolve);
+    return new Promise((resolve, reject) => {
+      this.#waiters.push({ resolve, reject });
     });
   }
 
   #release(sessionId: string): void {
     const waiter = this.#waiters.shift();
-    if (waiter) waiter(sessionId);
+    if (waiter) waiter.resolve(sessionId);
     else this.#idle.push(sessionId);
   }
 
@@ -81,9 +93,14 @@ export class SessionPool {
       const { id } = await this.#bridge.startSession({});
       this.#release(id);
     } catch (err) {
-      // Pool shrinks if respawn fails; surfaces as queue starvation rather
-      // than a hidden crash loop.
       console.error(`SessionPool: respawn failed: ${String(err)}`);
+      // The pool just lost a session, so fairness among queued waiters is
+      // murky. Rather than starve them on a session that will never come,
+      // reject every queued waiter and let callers fail fast.
+      const error = new Error(`session respawn failed: ${String(err)}`);
+      for (const waiter of this.#waiters.splice(0)) {
+        waiter.reject(error);
+      }
     }
   }
 }
