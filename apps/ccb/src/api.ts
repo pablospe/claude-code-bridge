@@ -37,13 +37,20 @@ export async function runApi(options: ApiOptions): Promise<ApiHandle> {
   });
   const pool = new SessionPool({ bridge, size: options.poolSize });
   await pool.start();
-  const server = await startApiServer({
-    pool,
-    host: options.host,
-    port: options.port,
-    turnTimeoutMs: options.turnTimeoutMs,
-    apiKey: options.apiKey,
-  });
+  let server: Awaited<ReturnType<typeof startApiServer>>;
+  try {
+    server = await startApiServer({
+      pool,
+      host: options.host,
+      port: options.port,
+      turnTimeoutMs: options.turnTimeoutMs,
+      apiKey: options.apiKey,
+    });
+  } catch (err) {
+    // A bind failure (port in use) must not leak the warm sessions.
+    await pool.close().catch(() => undefined);
+    throw err;
+  }
   return {
     url: server.url,
     async stop() {
