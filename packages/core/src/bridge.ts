@@ -214,6 +214,17 @@ export class Bridge implements ClaudeCodeBridge {
     await session.supervisor.interrupt(sessionId);
   }
 
+  async clear(sessionId: string): Promise<void> {
+    const session = this.#requireSession(sessionId);
+    if (session.state !== "open") {
+      throw new Error(`session is closing: ${sessionId}`);
+    }
+    if (session.supervisor.clear === undefined) {
+      throw new Error("supervisor does not support clear");
+    }
+    await session.supervisor.clear(sessionId);
+  }
+
   async close(sessionId: string): Promise<void> {
     const session = this.#sessions.get(sessionId);
     if (!session) return;

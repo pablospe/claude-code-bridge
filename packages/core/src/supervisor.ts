@@ -9,6 +9,12 @@ export interface Supervisor {
   start(ctx: SupervisorContext): Promise<void>;
   sendMessage(sessionId: string, messageId: string, content: string): Promise<void>;
   interrupt(sessionId: string): Promise<void>;
+  /**
+   * Reset the driven session's conversation context in place (e.g. inject
+   * /clear into the interactive UI). Optional: supervisors that cannot reset
+   * without a restart leave it undefined and Bridge.clear rejects.
+   */
+  clear?(sessionId: string): Promise<void>;
   close(sessionId: string): Promise<void>;
 }
 

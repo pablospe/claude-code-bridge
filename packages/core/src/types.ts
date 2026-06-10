@@ -21,5 +21,6 @@ export interface ClaudeCodeBridge {
   sendMessage(sessionId: string, content: string, options?: SendOptions): Promise<string>;
   events(sessionId: string, options?: EventsOptions): AsyncIterable<BridgeEvent>;
   interrupt(sessionId: string): Promise<void>;
+  clear(sessionId: string): Promise<void>;
   close(sessionId: string): Promise<void>;
 }
