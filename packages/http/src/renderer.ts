@@ -6,17 +6,39 @@ export const TOOL_CALL_INSTRUCTION =
   '{"tool_call": {"name": "<tool name>", "arguments": {...}}} — or ' +
   '{"tool_calls": [...]} for multiple calls. Otherwise reply normally.';
 
+/**
+ * Normalize an OpenAI message `content` field to plain text. Accepts a string,
+ * a content-parts array (joining the `text` of each text part, dropping non-text
+ * parts like images), or null/anything else (empty string).
+ */
+function contentToText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "object" && part !== null) {
+          const p = part as Record<string, unknown>;
+          if (typeof p.text === "string") return p.text;
+        }
+        return "";
+      })
+      .join("");
+  }
+  return "";
+}
+
 function renderMessage(m: ChatMessage): string {
   if (m.role === "tool") {
-    return `[tool result for ${m.tool_call_id ?? "unknown"}]\n${m.content ?? ""}`;
+    return `[tool result for ${m.tool_call_id ?? "unknown"}]\n${contentToText(m.content)}`;
   }
   if (m.role === "assistant" && m.tool_calls !== undefined && m.tool_calls.length > 0) {
     const calls = m.tool_calls
       .map((c) => `[assistant tool_call ${c.id}]\n${c.function.name}(${c.function.arguments})`)
       .join("\n\n");
-    return m.content ? `[assistant]\n${m.content}\n\n${calls}` : calls;
+    const text = contentToText(m.content);
+    return text.length > 0 ? `[assistant]\n${text}\n\n${calls}` : calls;
   }
-  return `[${m.role}]\n${m.content ?? ""}`;
+  return `[${m.role}]\n${contentToText(m.content)}`;
 }
 
 /**
@@ -32,9 +54,11 @@ export function renderTranscript(
   const system = messages.filter((m) => m.role === "system");
   const rest = messages.filter((m) => m.role !== "system");
   if (system.length > 0) {
-    parts.push(system.map((m) => m.content ?? "").join("\n\n"));
+    parts.push(system.map((m) => contentToText(m.content)).join("\n\n"));
   }
-  parts.push(rest.map(renderMessage).join("\n\n"));
+  if (rest.length > 0) {
+    parts.push(rest.map(renderMessage).join("\n\n"));
+  }
   if (tools.length > 0) {
     const schemas = tools.map((t) => JSON.stringify(t.function, null, 2)).join("\n");
     parts.push(`[available tools]\n${schemas}\n\n${TOOL_CALL_INSTRUCTION}`);

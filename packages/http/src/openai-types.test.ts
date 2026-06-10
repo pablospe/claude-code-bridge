@@ -46,4 +46,10 @@ describe("validateChatRequest", () => {
     const r = validateChatRequest({ model: "m", messages: [{ content: "x" }] });
     expect(r.ok).toBe(false);
   });
+
+  test("rejects empty messages array", () => {
+    const r = validateChatRequest({ model: "m", messages: [] });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("messages");
+  });
 });

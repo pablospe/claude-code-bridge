@@ -7,7 +7,7 @@ export interface ToolCall {
 
 export interface ChatMessage {
   readonly role: "system" | "user" | "assistant" | "tool";
-  readonly content: string | null;
+  readonly content: string | ReadonlyArray<{ type: string; text?: string }> | null;
   readonly tool_calls?: ReadonlyArray<ToolCall>;
   readonly tool_call_id?: string;
 }
@@ -32,6 +32,11 @@ export type Validated<T> = { ok: true; value: T } | { ok: false; error: string }
 
 const ROLES = new Set(["system", "user", "assistant", "tool"]);
 
+/**
+ * Validate the request envelope. Only each message's `role` is checked here;
+ * `content` (string or content-parts array) and `tool_calls` shapes are
+ * normalized or tolerated downstream by the renderer, not enforced here.
+ */
 export function validateChatRequest(body: unknown): Validated<ChatRequest> {
   if (typeof body !== "object" || body === null) {
     return { ok: false, error: "request body must be a JSON object" };

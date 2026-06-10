@@ -56,4 +56,68 @@ describe("renderTranscript", () => {
     const out = renderTranscript([{ role: "user", content: "hi" }], []);
     expect(out).not.toContain(TOOL_CALL_INSTRUCTION);
   });
+
+  test("content-parts array renders as joined text", () => {
+    const out = renderTranscript(
+      [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "hello " },
+            { type: "text", text: "world" },
+          ],
+        },
+      ],
+      [],
+    );
+    expect(out).toContain("[user]\nhello world");
+  });
+
+  test("content-parts array renders only the text parts", () => {
+    const out = renderTranscript(
+      [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "describe this" },
+            { type: "image_url", image_url: { url: "https://example.com/x.png" } } as never,
+          ],
+        },
+      ],
+      [],
+    );
+    expect(out).toContain("[user]\ndescribe this");
+    expect(out).not.toContain("example.com");
+  });
+
+  test("system-only transcript has no empty conversation gap", () => {
+    const out = renderTranscript([{ role: "system", content: "be nice" }], []);
+    expect(out).not.toContain("\n\n\n");
+  });
+
+  test("assistant with both content and tool_calls renders both", () => {
+    const out = renderTranscript(
+      [
+        {
+          role: "assistant",
+          content: "let me check",
+          tool_calls: [
+            {
+              id: "call_9",
+              type: "function",
+              function: { name: "get_weather", arguments: "{}" },
+            },
+          ],
+        },
+      ],
+      [],
+    );
+    expect(out).toContain("[assistant]\nlet me check");
+    expect(out).toContain("[assistant tool_call call_9]");
+  });
+
+  test("tool message without tool_call_id renders for unknown", () => {
+    const out = renderTranscript([{ role: "tool", content: "result" }], []);
+    expect(out).toContain("[tool result for unknown]");
+  });
 });
