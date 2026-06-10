@@ -117,14 +117,19 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
         try {
           let sentRole = false;
-          const result = await runPoolTurn(pool, prompt, turnTimeoutMs, (delta) => {
-            if (buffered) return; // tool turns are buffered until parseable
-            if (!sentRole) {
-              sentRole = true;
-              send(buildChunk({ id, model: request.model, delta: { role: "assistant" } }));
-            }
-            send(buildChunk({ id, model: request.model, delta: { content: delta } }));
-          });
+          // Tool turns are buffered until parseable: pass no onDelta so the
+          // retry helper sees no emitted output and a crashed first attempt
+          // stays retryable.
+          const onDelta = buffered
+            ? undefined
+            : (delta: string) => {
+                if (!sentRole) {
+                  sentRole = true;
+                  send(buildChunk({ id, model: request.model, delta: { role: "assistant" } }));
+                }
+                send(buildChunk({ id, model: request.model, delta: { content: delta } }));
+              };
+          const result = await runPoolTurn(pool, prompt, turnTimeoutMs, onDelta);
           const parsed = parseReply(result.content);
           if (parsed.kind === "tool_calls") {
             send(
