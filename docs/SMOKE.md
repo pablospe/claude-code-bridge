@@ -540,3 +540,14 @@ uv run --with litellm scripts/litellm-smoke.py
 ```
 
 Expected: prints both replies and `OK`, exit 0.
+
+### Smoke 5 — structured output via Instructor (forced tool_choice)
+
+```bash
+uv run --with instructor --with openai scripts/instructor-smoke.py
+```
+
+Expected: prints `extracted: name='John Doe' age=30` and `OK`, exit 0. This
+exercises the `tool_choice` forced-function path: Instructor's default TOOLS
+mode sends the Pydantic schema as a tool with a forced tool_choice; the facade
+renders the MUST-call instruction and the reply parses into `tool_calls`.
