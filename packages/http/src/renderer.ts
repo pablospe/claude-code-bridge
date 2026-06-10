@@ -12,9 +12,10 @@ export const TOOL_CALL_REQUIRED_INSTRUCTION =
   '{"tool_calls": [...]} for multiple calls. Do not reply with prose.';
 
 export function toolCallForcedInstruction(name: string): string {
+  const q = JSON.stringify(name);
   return (
-    `You MUST respond with ONLY a fenced json block calling "${name}" — ` +
-    `{"tool_call": {"name": "${name}", "arguments": {...}}}. Do not reply with prose.`
+    `You MUST respond with ONLY a fenced json block calling ${q} — ` +
+    `{"tool_call": {"name": ${q}, "arguments": {...}}}. Do not reply with prose.`
   );
 }
 

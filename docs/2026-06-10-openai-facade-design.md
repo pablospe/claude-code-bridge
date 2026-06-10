@@ -146,6 +146,11 @@ translates.
   enforcement (`strict: true` unsupported); parallel calls best-effort via
   the array form.
 
+Forced/`required` `tool_choice` is prompt-enforced best-effort: a text model
+cannot be hard-guaranteed to emit the call, so a prose reply still degrades to
+text. Clients needing a hard guarantee (e.g. Instructor) should rely on their
+own retry, which the stateless design makes cheap.
+
 ## Streaming
 
 `stream: true` → real SSE. `agent.progress` and non-final `agent.reply`

@@ -60,10 +60,12 @@ describe("validateChatRequest", () => {
   });
 
   test("accepts the string literal tool_choice values", () => {
+    // "required" needs a non-empty tools array to pass cross-field validation.
     for (const tc of ["auto", "none", "required"] as const) {
       const r = validateChatRequest({
         model: "m",
         messages: [{ role: "user", content: "hi" }],
+        tools: [{ type: "function", function: { name: "get_weather" } }],
         tool_choice: tc,
       });
       expect(r.ok).toBe(true);
@@ -75,12 +77,65 @@ describe("validateChatRequest", () => {
     const r = validateChatRequest({
       model: "m",
       messages: [{ role: "user", content: "hi" }],
+      tools: [{ type: "function", function: { name: "extract" } }],
       tool_choice: { type: "function", function: { name: "extract" } },
     });
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.tool_choice).toEqual({ type: "function", function: { name: "extract" } });
     }
+  });
+
+  test("rejects tool_choice 'required' with an empty tools array", () => {
+    const r = validateChatRequest({
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      tool_choice: "required",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("non-empty tools array");
+  });
+
+  test("rejects a forced-function object with an empty tools array", () => {
+    const r = validateChatRequest({
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      tool_choice: { type: "function", function: { name: "extract" } },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("non-empty tools array");
+  });
+
+  test("rejects a forced name not present in tools", () => {
+    const r = validateChatRequest({
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [{ type: "function", function: { name: "get_weather" } }],
+      tool_choice: { type: "function", function: { name: "extract" } },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("'extract' is not present in tools");
+  });
+
+  test("rejects a forced name with invalid characters", () => {
+    const r = validateChatRequest({
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [{ type: "function", function: { name: "bad name!" } }],
+      tool_choice: { type: "function", function: { name: "bad name!" } },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("tool_choice");
+  });
+
+  test("accepts a forced name present in tools", () => {
+    const r = validateChatRequest({
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [{ type: "function", function: { name: "extract" } }],
+      tool_choice: { type: "function", function: { name: "extract" } },
+    });
+    expect(r.ok).toBe(true);
   });
 
   test("rejects a forced-function object without a name", () => {

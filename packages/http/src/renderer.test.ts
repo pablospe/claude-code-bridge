@@ -160,9 +160,10 @@ describe("renderTranscript", () => {
     expect(out).not.toContain("You MUST respond");
   });
 
-  test("toolCallForcedInstruction embeds the given name", () => {
+  test("toolCallForcedInstruction embeds the given name JSON-quoted", () => {
     const out = toolCallForcedInstruction("extract");
-    expect(out).toContain('"extract"');
+    // The name appears quoted both in the prose mention and the JSON example.
+    expect(out.split('"extract"').length - 1).toBeGreaterThanOrEqual(2);
     expect(out).toContain("You MUST respond");
   });
 });

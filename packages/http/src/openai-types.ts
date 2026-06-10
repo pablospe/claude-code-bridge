@@ -39,6 +39,7 @@ export type Validated<T> = { ok: true; value: T } | { ok: false; error: string }
 
 const ROLES = new Set(["system", "user", "assistant", "tool"]);
 const TOOL_CHOICE_LITERALS = new Set(["auto", "none", "required"]);
+const FUNCTION_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
 /**
  * Parse the optional `tool_choice` field. Accepts the three string literals
@@ -57,7 +58,10 @@ function parseToolChoice(value: unknown): Validated<ToolChoice> {
       return { ok: true, value: { type: "function", function: { name: fn.name } } };
     }
   }
-  return { ok: false, error: "unsupported tool_choice" };
+  return {
+    ok: false,
+    error: "tool_choice must be 'auto', 'none', 'required', or {type:'function', function:{name}}",
+  };
 }
 
 /**
@@ -86,14 +90,41 @@ export function validateChatRequest(body: unknown): Validated<ChatRequest> {
   if (!toolChoice.ok) {
     return { ok: false, error: toolChoice.error };
   }
+  const tools: ReadonlyArray<ToolDef> = Array.isArray(b.tools)
+    ? (b.tools as ReadonlyArray<ToolDef>)
+    : [];
+
+  // Cross-field checks: a forced/required choice only makes sense against a
+  // non-empty tools array, and a forced name must name a tool actually present.
+  const choice = toolChoice.value;
+  const isForced = typeof choice === "object";
+  if ((choice === "required" || isForced) && tools.length === 0) {
+    return {
+      ok: false,
+      error: "tool_choice 'required' or a forced function requires a non-empty tools array",
+    };
+  }
+  if (isForced) {
+    const name = choice.function.name;
+    if (!FUNCTION_NAME_PATTERN.test(name)) {
+      return {
+        ok: false,
+        error: `tool_choice function name '${name}' must match ${FUNCTION_NAME_PATTERN.source}`,
+      };
+    }
+    if (!tools.some((t) => t.function?.name === name)) {
+      return { ok: false, error: `tool_choice function '${name}' is not present in tools` };
+    }
+  }
+
   return {
     ok: true,
     value: {
       model: typeof b.model === "string" ? b.model : "ccb-claude",
       messages: b.messages as ReadonlyArray<ChatMessage>,
-      tools: Array.isArray(b.tools) ? (b.tools as ReadonlyArray<ToolDef>) : [],
+      tools,
       stream: b.stream === true,
-      tool_choice: toolChoice.value,
+      tool_choice: choice,
     },
   };
 }

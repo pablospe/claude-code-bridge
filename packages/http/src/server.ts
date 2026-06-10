@@ -100,7 +100,10 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     if (!request.stream) {
       try {
         const result = await runPoolTurn(pool, prompt, turnTimeoutMs);
-        const parsed = parseReply(result.content);
+        const parsed =
+          request.tool_choice === "none"
+            ? { kind: "text" as const, content: result.content }
+            : parseReply(result.content);
         return Response.json(buildCompletion({ model: request.model, prompt, parsed }));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -130,7 +133,10 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
                 send(buildChunk({ id, model: request.model, delta: { content: delta } }));
               };
           const result = await runPoolTurn(pool, prompt, turnTimeoutMs, onDelta);
-          const parsed = parseReply(result.content);
+          const parsed =
+            request.tool_choice === "none"
+              ? { kind: "text" as const, content: result.content }
+              : parseReply(result.content);
           if (parsed.kind === "tool_calls") {
             send(
               buildChunk({

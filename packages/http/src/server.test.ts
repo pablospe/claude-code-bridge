@@ -112,6 +112,109 @@ describe("POST /v1/chat/completions", () => {
     expect(body.choices[0]?.message.content).not.toContain('"name": "get_weather"');
   });
 
+  test("tool_choice none keeps a tool-shaped reply as plain text (non-streaming)", async () => {
+    const block =
+      '```json\n{"tool_call": {"name": "get_weather", "arguments": {"city": "Paris"}}}\n```';
+    const noneBridge = new Bridge({
+      storeDir: `${storeDir}-none`,
+      supervisorFactory: () =>
+        new ScriptedSupervisor((ctx) => {
+          ctx.emit({
+            type: "agent.reply",
+            sessionId: ctx.sessionId,
+            content: block,
+            final: true,
+          });
+        }),
+    });
+    const nonePool = new SessionPool({ bridge: noneBridge, size: 1 });
+    await nonePool.start();
+    const noneServer = await startApiServer({
+      pool: nonePool,
+      host: "127.0.0.1",
+      port: 0,
+      turnTimeoutMs: 10_000,
+    });
+    try {
+      const res = await fetch(`${noneServer.url}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "ccb-claude",
+          messages: [{ role: "user", content: "weather?" }],
+          tools: [{ type: "function", function: { name: "get_weather", parameters: {} } }],
+          tool_choice: "none",
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        choices: Array<{
+          message: { content: string; tool_calls?: unknown };
+          finish_reason: string;
+        }>;
+      };
+      expect(body.choices[0]?.finish_reason).toBe("stop");
+      expect(body.choices[0]?.message.tool_calls).toBeUndefined();
+      expect(body.choices[0]?.message.content).toContain('"tool_call"');
+    } finally {
+      await noneServer.stop();
+      await nonePool.close();
+      await rm(`${storeDir}-none`, { recursive: true, force: true });
+    }
+  });
+
+  test("tool_choice none keeps a tool-shaped reply as plain text (streaming)", async () => {
+    const block =
+      '```json\n{"tool_call": {"name": "get_weather", "arguments": {"city": "Paris"}}}\n```';
+    const noneBridge = new Bridge({
+      storeDir: `${storeDir}-none-stream`,
+      supervisorFactory: () =>
+        new ScriptedSupervisor((ctx) => {
+          ctx.emit({
+            type: "agent.reply",
+            sessionId: ctx.sessionId,
+            content: block,
+            final: true,
+          });
+        }),
+    });
+    const nonePool = new SessionPool({ bridge: noneBridge, size: 1 });
+    await nonePool.start();
+    const noneServer = await startApiServer({
+      pool: nonePool,
+      host: "127.0.0.1",
+      port: 0,
+      turnTimeoutMs: 10_000,
+    });
+    try {
+      const res = await fetch(`${noneServer.url}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "ccb-claude",
+          stream: true,
+          messages: [{ role: "user", content: "weather?" }],
+          tools: [{ type: "function", function: { name: "get_weather", parameters: {} } }],
+          tool_choice: "none",
+        }),
+      });
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      const dataLines = text.split("\n").filter((l) => l.startsWith("data: "));
+      expect(dataLines.at(-1)).toBe("data: [DONE]");
+      const parsed = dataLines.slice(0, -1).map((l) => JSON.parse(l.slice("data: ".length)));
+      const toolChunks = parsed.filter((c) => c.choices[0].delta.tool_calls);
+      expect(toolChunks).toHaveLength(0);
+      const finals = parsed.filter((c) => c.choices[0].finish_reason !== null);
+      expect(finals).toHaveLength(1);
+      expect(finals[0].choices[0].finish_reason).toBe("stop");
+    } finally {
+      await noneServer.stop();
+      await nonePool.close();
+      await rm(`${storeDir}-none-stream`, { recursive: true, force: true });
+    }
+  });
+
   test("streaming emits chunks then [DONE]", async () => {
     const res = await post("/v1/chat/completions", {
       model: "ccb-claude",
