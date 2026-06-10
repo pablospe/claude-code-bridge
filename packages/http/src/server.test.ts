@@ -236,6 +236,61 @@ describe("POST /v1/chat/completions", () => {
     expect(finals).toHaveLength(1);
   });
 
+  test("streamed text is never reinterpreted as tool calls mid-stream", async () => {
+    // Non-buffered streaming (no tools): a non-final prose reply streams as a
+    // content delta, then the final reply is a fenced tool_call block.
+    // parseReply would classify it as tool_calls, but since content deltas
+    // already streamed the route must finish with stop and emit no tool_calls.
+    const block =
+      '```json\n{"tool_call": {"name": "get_weather", "arguments": {"city": "Paris"}}}\n```';
+    const lateBridge = new Bridge({
+      storeDir: `${storeDir}-late-tool`,
+      supervisorFactory: () =>
+        new ScriptedSupervisor((ctx) => {
+          ctx.emit({
+            type: "agent.reply",
+            sessionId: ctx.sessionId,
+            content: "checking...",
+            final: false,
+          });
+          ctx.emit({ type: "agent.reply", sessionId: ctx.sessionId, content: block, final: true });
+        }),
+    });
+    const latePool = new SessionPool({ bridge: lateBridge, size: 1 });
+    await latePool.start();
+    const lateServer = await startApiServer({
+      pool: latePool,
+      host: "127.0.0.1",
+      port: 0,
+      turnTimeoutMs: 10_000,
+    });
+    try {
+      const res = await fetch(`${lateServer.url}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "ccb-claude",
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      const dataLines = text.split("\n").filter((l) => l.startsWith("data: "));
+      expect(dataLines.at(-1)).toBe("data: [DONE]");
+      const parsed = dataLines.slice(0, -1).map((l) => JSON.parse(l.slice("data: ".length)));
+      const toolChunks = parsed.filter((c) => c.choices[0].delta.tool_calls);
+      expect(toolChunks).toHaveLength(0);
+      const finals = parsed.filter((c) => c.choices[0].finish_reason !== null);
+      expect(finals).toHaveLength(1);
+      expect(finals[0].choices[0].finish_reason).toBe("stop");
+    } finally {
+      await lateServer.stop();
+      await latePool.close();
+      await rm(`${storeDir}-late-tool`, { recursive: true, force: true });
+    }
+  });
+
   test("a crashed session is retried once on a fresh session", async () => {
     // The first session's supervisor emits session.ended{reason:"crash"} on
     // sendMessage, so runTurn rejects "session ended mid-turn: crash" and the

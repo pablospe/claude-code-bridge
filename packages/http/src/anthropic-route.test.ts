@@ -288,6 +288,159 @@ describe("POST /v1/messages", () => {
     }
   });
 
+  test("streamed text is never reinterpreted as tool calls mid-stream", async () => {
+    // Non-buffered streaming (no tools): a non-final prose reply streams as a
+    // text delta, then the final reply is a fenced tool_call block. parseReply
+    // would classify that final content as tool_calls, but because text deltas
+    // already went out, the route must keep the text interpretation: one text
+    // block opened and closed, no tool_use, end_turn.
+    const bridge = new Bridge({
+      storeDir: `${storeDir}-late-tool`,
+      supervisorFactory: () =>
+        new ScriptedSupervisor((ctx) => {
+          ctx.emit({
+            type: "agent.reply",
+            sessionId: ctx.sessionId,
+            content: "checking...",
+            final: false,
+          });
+          ctx.emit({
+            type: "agent.reply",
+            sessionId: ctx.sessionId,
+            content: TOOL_REPLY,
+            final: true,
+          });
+        }),
+    });
+    const p = new SessionPool({ bridge, size: 1 });
+    await p.start();
+    const s = await startApiServer({ pool: p, host: "127.0.0.1", port: 0, turnTimeoutMs: 10_000 });
+    try {
+      const res = await fetch(`${s.url}/v1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "ccb-claude",
+          max_tokens: 1024,
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      const events = parseSse(await res.text());
+      const types = events.map((e) => e.event);
+
+      // No tool_use block ever opened.
+      const toolStart = events.find(
+        (e) =>
+          e.event === "content_block_start" &&
+          (e.data as { content_block: { type: string } }).content_block.type === "tool_use",
+      );
+      expect(toolStart).toBeUndefined();
+
+      // Exactly one text block opened and one closed.
+      const textStarts = events.filter(
+        (e) =>
+          e.event === "content_block_start" &&
+          (e.data as { content_block: { type: string } }).content_block.type === "text",
+      );
+      expect(textStarts).toHaveLength(1);
+      expect(types.filter((t) => t === "content_block_stop")).toHaveLength(1);
+
+      const msgDelta = events.find((e) => e.event === "message_delta")?.data as {
+        delta: { stop_reason: string };
+      };
+      expect(msgDelta.delta.stop_reason).toBe("end_turn");
+      expect(types.at(-1)).toBe("message_stop");
+    } finally {
+      await s.stop();
+      await p.close();
+      await rm(`${storeDir}-late-tool`, { recursive: true, force: true });
+    }
+  });
+
+  test("mid-stream error frame terminates the stream", async () => {
+    const bridge = new Bridge({
+      storeDir: `${storeDir}-mid-error`,
+      supervisorFactory: () => new SilentSupervisor(),
+    });
+    const p = new SessionPool({ bridge, size: 1 });
+    await p.start();
+    const s = await startApiServer({ pool: p, host: "127.0.0.1", port: 0, turnTimeoutMs: 50 });
+    try {
+      const res = await fetch(`${s.url}/v1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "ccb-claude",
+          max_tokens: 1024,
+          stream: true,
+          messages: [{ role: "user", content: "marco" }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      const events = parseSse(await res.text());
+      expect(events[0]?.event).toBe("message_start");
+      const errorFrame = events.find((e) => e.event === "error");
+      expect(errorFrame).toBeDefined();
+      const data = errorFrame?.data as { type: string; error: { type: string } };
+      expect(data.type).toBe("error");
+      expect(data.error.type).toBe("api_error");
+    } finally {
+      await s.stop();
+      await p.close();
+      await rm(`${storeDir}-mid-error`, { recursive: true, force: true });
+    }
+  });
+
+  test("agent.done-only turn opens and closes an empty text block", async () => {
+    const bridge = new Bridge({
+      storeDir: `${storeDir}-done-only`,
+      supervisorFactory: () =>
+        new ScriptedSupervisor((ctx) => {
+          ctx.emit({ type: "agent.done", sessionId: ctx.sessionId });
+        }),
+    });
+    const p = new SessionPool({ bridge, size: 1 });
+    await p.start();
+    const s = await startApiServer({ pool: p, host: "127.0.0.1", port: 0, turnTimeoutMs: 10_000 });
+    try {
+      const res = await fetch(`${s.url}/v1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "ccb-claude",
+          max_tokens: 1024,
+          stream: true,
+          messages: [{ role: "user", content: "marco" }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      const events = parseSse(await res.text());
+      const types = events.map((e) => e.event);
+
+      expect(types[0]).toBe("message_start");
+      // Text block opened (the no-delta fallback) but carries no text_delta.
+      expect(types.filter((t) => t === "content_block_start")).toHaveLength(1);
+      const textDeltas = events.filter(
+        (e) =>
+          e.event === "content_block_delta" &&
+          (e.data as { delta: { type: string } }).delta.type === "text_delta",
+      );
+      expect(textDeltas).toHaveLength(0);
+      expect(types.filter((t) => t === "content_block_stop")).toHaveLength(1);
+      const msgDelta = events.find((e) => e.event === "message_delta")?.data as {
+        delta: { stop_reason: string };
+      };
+      expect(msgDelta.delta.stop_reason).toBe("end_turn");
+      expect(types.at(-1)).toBe("message_stop");
+    } finally {
+      await s.stop();
+      await p.close();
+      await rm(`${storeDir}-done-only`, { recursive: true, force: true });
+    }
+  });
+
   test("invalid body is a 400 in the anthropic error envelope", async () => {
     const res = await post("/v1/messages", { model: "m" });
     expect(res.status).toBe(400);

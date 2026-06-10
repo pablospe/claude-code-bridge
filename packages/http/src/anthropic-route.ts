@@ -91,8 +91,10 @@ export async function handleAnthropicMessages(
             };
 
         const result = await runPoolTurn(pool, prompt, turnTimeoutMs, onDelta);
+        // Once text deltas have streamed, the client already saw this content as
+        // prose; never reinterpret the final content as tool calls mid-stream.
         const parsed =
-          request.tool_choice === "none"
+          request.tool_choice === "none" || textStarted
             ? { kind: "text" as const, content: result.content }
             : parseReply(result.content);
 

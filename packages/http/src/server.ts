@@ -135,8 +135,10 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
                 send(buildChunk({ id, model: request.model, delta: { content: delta } }));
               };
           const result = await runPoolTurn(pool, prompt, turnTimeoutMs, onDelta);
+          // Once content deltas have streamed, the client already saw this as
+          // text; never reinterpret the final content as tool calls mid-stream.
           const parsed =
-            request.tool_choice === "none"
+            request.tool_choice === "none" || sentRole
               ? { kind: "text" as const, content: result.content }
               : parseReply(result.content);
           if (parsed.kind === "tool_calls") {
