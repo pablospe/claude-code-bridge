@@ -20,7 +20,9 @@
     "@ccb/process": "workspace:*"
   },
   "openclaw": {
-    "extensions": ["./dist/index.js"],
+    "extensions": [
+      "./dist/index.js"
+    ],
     "compat": {
       "pluginApi": ">=2026.4.25"
     },

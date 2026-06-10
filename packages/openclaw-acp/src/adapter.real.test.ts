@@ -2,8 +2,8 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Bridge } from "@ccb/core";
 import { claudeCodeSupervisorFactory } from "@ccb/claude-code";
+import { Bridge } from "@ccb/core";
 import { LauncherUnavailableError } from "@ccb/process";
 import type { AcpRuntimeEvent } from "./acp-contract.ts";
 import { createClaudeBridgeRuntime } from "./adapter.ts";
@@ -51,7 +51,9 @@ test(
       handle = await rt.ensureSession({ sessionKey: "real-1", agent: "test", mode: "persistent" });
     } catch (err) {
       if (err instanceof LauncherUnavailableError) {
-        console.log(`openclaw-acp real integration: skipped (node-pty unavailable: ${err.message})`);
+        console.log(
+          `openclaw-acp real integration: skipped (node-pty unavailable: ${err.message})`,
+        );
         return;
       }
       throw err;
@@ -84,7 +86,9 @@ test(
       // The turn ended cleanly (completed) — the bridge round-tripped a reply.
       expect(result.status).toBe("completed");
       const text = events
-        .filter((e): e is Extract<AcpRuntimeEvent, { type: "text_delta" }> => e.type === "text_delta")
+        .filter(
+          (e): e is Extract<AcpRuntimeEvent, { type: "text_delta" }> => e.type === "text_delta",
+        )
         .map((e) => e.text)
         .join("");
       expect(text.length).toBeGreaterThan(0);

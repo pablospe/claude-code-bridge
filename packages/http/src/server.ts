@@ -1,9 +1,9 @@
 import { validateChatRequest } from "./openai-types.ts";
+import type { SessionPool } from "./pool.ts";
 import { renderTranscript } from "./renderer.ts";
 import { buildChunk, buildCompletion, newCompletionId } from "./response.ts";
-import type { SessionPool } from "./pool.ts";
 import { parseReply } from "./tool-call-parser.ts";
-import { runTurn, TurnTimeoutError, type TurnResult } from "./turn.ts";
+import { runTurn, type TurnResult, TurnTimeoutError } from "./turn.ts";
 
 export const FACADE_MODEL_ID = "ccb-claude";
 

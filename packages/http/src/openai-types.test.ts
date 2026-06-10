@@ -28,7 +28,7 @@ describe("validateChatRequest", () => {
             { id: "call_1", type: "function", function: { name: "get_weather", arguments: "{}" } },
           ],
         },
-        { role: "tool", tool_call_id: "call_1", content: "{\"temp\":18}" },
+        { role: "tool", tool_call_id: "call_1", content: '{"temp":18}' },
       ],
       tools: [{ type: "function", function: { name: "get_weather", parameters: {} } }],
     });

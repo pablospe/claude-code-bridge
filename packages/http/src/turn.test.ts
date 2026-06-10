@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import { mockSupervisorFactory } from "@ccb/claude-code";
-import { Bridge, type BridgeEvent, type Supervisor, type SupervisorContext } from "@ccb/core";
+import { Bridge, type Supervisor, type SupervisorContext } from "@ccb/core";
 import { runTurn } from "./turn.ts";
 
 // A supervisor that never emits a terminal event, so the turn timeout always
@@ -57,9 +57,9 @@ describe("runTurn", () => {
   test("times out when no terminal event arrives", async () => {
     const bridge = new Bridge({ storeDir, supervisorFactory: () => new SilentSupervisor() });
     const { id } = await bridge.startSession({});
-    await expect(
-      runTurn({ bridge, sessionId: id, prompt: "ping", timeoutMs: 50 }),
-    ).rejects.toThrow(/turn timed out after 50ms/);
+    await expect(runTurn({ bridge, sessionId: id, prompt: "ping", timeoutMs: 50 })).rejects.toThrow(
+      /turn timed out after 50ms/,
+    );
     await bridge.close(id);
   });
 

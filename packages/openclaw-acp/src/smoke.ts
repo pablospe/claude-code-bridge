@@ -8,8 +8,8 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Bridge } from "@ccb/core";
 import { mockSupervisorFactory } from "@ccb/claude-code";
+import { Bridge } from "@ccb/core";
 import type { AcpRuntimeEvent } from "./acp-contract.ts";
 import { createClaudeBridgeRuntime } from "./adapter.ts";
 
@@ -18,7 +18,11 @@ async function main(): Promise<void> {
   const bridge = new Bridge({ storeDir: dir, supervisorFactory: mockSupervisorFactory() });
   const rt = createClaudeBridgeRuntime({ bridge });
   try {
-    const handle = await rt.ensureSession({ sessionKey: "smoke", agent: "test", mode: "persistent" });
+    const handle = await rt.ensureSession({
+      sessionKey: "smoke",
+      agent: "test",
+      mode: "persistent",
+    });
     const turn = rt.startTurn?.({ handle, text: "hello-node", mode: "prompt", requestId: "s1" });
     if (!turn) throw new Error("startTurn missing");
 
@@ -35,8 +39,10 @@ async function main(): Promise<void> {
     const stored = await bridge.readStoredEvents(handle.runtimeSessionName);
 
     if (result.status !== "completed") throw new Error(`expected completed, got ${result.status}`);
-    if (!text.includes("hello-node")) throw new Error(`reply missing echo: ${JSON.stringify(text)}`);
-    if (stored.length === 0) throw new Error("readStoredEvents returned no events (store read failed)");
+    if (!text.includes("hello-node"))
+      throw new Error(`reply missing echo: ${JSON.stringify(text)}`);
+    if (stored.length === 0)
+      throw new Error("readStoredEvents returned no events (store read failed)");
 
     console.log(
       `NODE SMOKE OK: result=${result.status} text=${JSON.stringify(text)} storedEvents=${stored.length}`,

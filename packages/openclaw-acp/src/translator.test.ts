@@ -70,9 +70,7 @@ test("crash agent.done (channel-disconnected) is an error + failed terminal", ()
     sessionId: SID,
     reason: "channel-disconnected",
   });
-  expect(r.events).toEqual([
-    { type: "error", message: "channel-disconnected", retryable: true },
-  ]);
+  expect(r.events).toEqual([{ type: "error", message: "channel-disconnected", retryable: true }]);
   expect(r.terminal).toEqual({
     status: "failed",
     error: { message: "channel-disconnected", retryable: true },
@@ -98,7 +96,13 @@ test("PostToolUse tool.event maps to completed tool_call", () => {
     payload: { event: "PostToolUse", data: { tool_name: "Edit" } },
   });
   expect(r.events).toEqual([
-    { type: "tool_call", text: "Edit", status: "completed", title: "Edit", tag: "tool_call_update" },
+    {
+      type: "tool_call",
+      text: "Edit",
+      status: "completed",
+      title: "Edit",
+      tag: "tool_call_update",
+    },
   ]);
 });
 
@@ -142,9 +146,7 @@ test("crash session.ended (supervisor crashed) is an error + failed terminal", (
     sessionId: SID,
     reason: "supervisor crashed",
   });
-  expect(r.events).toEqual([
-    { type: "error", message: "supervisor crashed", retryable: true },
-  ]);
+  expect(r.events).toEqual([{ type: "error", message: "supervisor crashed", retryable: true }]);
   expect(r.terminal).toEqual({
     status: "failed",
     error: { message: "supervisor crashed", retryable: true },

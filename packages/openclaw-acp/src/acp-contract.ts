@@ -27,10 +27,7 @@ export type AcpSessionUpdateTag =
   | "plan"
   | (string & {});
 
-export type AcpRuntimeControl =
-  | "session/set_mode"
-  | "session/set_config_option"
-  | "session/status";
+export type AcpRuntimeControl = "session/set_mode" | "session/set_config_option" | "session/status";
 
 export type AcpRuntimeHandle = {
   sessionKey: string;
@@ -158,16 +155,9 @@ export interface AcpRuntime {
   getCapabilities?(input: {
     handle?: AcpRuntimeHandle;
   }): Promise<AcpRuntimeCapabilities> | AcpRuntimeCapabilities;
-  getStatus?(input: {
-    handle: AcpRuntimeHandle;
-    signal?: AbortSignal;
-  }): Promise<AcpRuntimeStatus>;
+  getStatus?(input: { handle: AcpRuntimeHandle; signal?: AbortSignal }): Promise<AcpRuntimeStatus>;
   setMode?(input: { handle: AcpRuntimeHandle; mode: string }): Promise<void>;
-  setConfigOption?(input: {
-    handle: AcpRuntimeHandle;
-    key: string;
-    value: string;
-  }): Promise<void>;
+  setConfigOption?(input: { handle: AcpRuntimeHandle; key: string; value: string }): Promise<void>;
   doctor?(): Promise<AcpRuntimeDoctorReport>;
   prepareFreshSession?(input: { sessionKey: string }): Promise<void>;
   cancel(input: { handle: AcpRuntimeHandle; reason?: string }): Promise<void>;

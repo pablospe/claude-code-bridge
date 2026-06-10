@@ -2,7 +2,7 @@
 import type { ChatMessage, ToolDef } from "./openai-types.ts";
 
 export const TOOL_CALL_INSTRUCTION =
-  'If you need a tool, reply with ONLY a fenced json block of the shape ' +
+  "If you need a tool, reply with ONLY a fenced json block of the shape " +
   '{"tool_call": {"name": "<tool name>", "arguments": {...}}} — or ' +
   '{"tool_calls": [...]} for multiple calls. Otherwise reply normally.';
 

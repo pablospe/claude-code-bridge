@@ -23,8 +23,7 @@ function toToolCall(raw: RawCall): ToolCall {
     type: "function",
     function: {
       name: raw.name,
-      arguments:
-        typeof raw.arguments === "string" ? raw.arguments : JSON.stringify(raw.arguments),
+      arguments: typeof raw.arguments === "string" ? raw.arguments : JSON.stringify(raw.arguments),
     },
   };
 }

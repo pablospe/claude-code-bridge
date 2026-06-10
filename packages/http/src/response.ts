@@ -44,8 +44,7 @@ export function buildCompletion(input: {
     parsed.kind === "text"
       ? { role: "assistant", content: parsed.content }
       : { role: "assistant", content: null, tool_calls: parsed.calls };
-  const completionText =
-    parsed.kind === "text" ? parsed.content : JSON.stringify(parsed.calls);
+  const completionText = parsed.kind === "text" ? parsed.content : JSON.stringify(parsed.calls);
   const promptTokens = estimateTokens(prompt);
   const completionTokens = estimateTokens(completionText);
   return {

@@ -98,7 +98,9 @@ describe("POST /v1/chat/completions", () => {
     expect(dataLines.at(-1)).toBe("data: [DONE]");
     const parsed = dataLines.slice(0, -1).map((l) => JSON.parse(l.slice("data: ".length)));
     expect(parsed[0]?.object).toBe("chat.completion.chunk");
-    const contents = parsed.flatMap((c) => (c.choices[0].delta.content ? [c.choices[0].delta.content] : []));
+    const contents = parsed.flatMap((c) =>
+      c.choices[0].delta.content ? [c.choices[0].delta.content] : [],
+    );
     expect(contents.join("")).toContain("marco");
     const finals = parsed.filter((c) => c.choices[0].finish_reason !== null);
     expect(finals).toHaveLength(1);
@@ -255,9 +257,7 @@ describe("POST /v1/chat/completions", () => {
       const text = await res.text();
       const dataLines = text.split("\n").filter((l) => l.startsWith("data: "));
       expect(dataLines.at(-1)).toBe("data: [DONE]");
-      const parsed = dataLines
-        .slice(0, -1)
-        .map((l) => JSON.parse(l.slice("data: ".length)));
+      const parsed = dataLines.slice(0, -1).map((l) => JSON.parse(l.slice("data: ".length)));
       const toolChunks = parsed.filter((c) => c.choices[0].delta.tool_calls);
       expect(toolChunks).toHaveLength(1);
       const call = toolChunks[0].choices[0].delta.tool_calls[0];
@@ -268,9 +268,7 @@ describe("POST /v1/chat/completions", () => {
       expect(finals[0].choices[0].finish_reason).toBe("tool_calls");
       // Buffering held: no content deltas precede the tool_calls chunk.
       const toolIdx = parsed.findIndex((c) => c.choices[0].delta.tool_calls);
-      const contentBefore = parsed
-        .slice(0, toolIdx)
-        .some((c) => c.choices[0].delta.content);
+      const contentBefore = parsed.slice(0, toolIdx).some((c) => c.choices[0].delta.content);
       expect(contentBefore).toBe(false);
     } finally {
       await toolServer.stop();
