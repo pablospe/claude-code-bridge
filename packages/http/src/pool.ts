@@ -18,13 +18,16 @@ interface Waiter {
  *
  * A failed respawn rejects all queued waiters and shrinks the pool, so callers
  * fail fast instead of hanging on a session that will never come. close()
- * likewise rejects any queued waiters.
+ * likewise rejects any queued waiters, and also closes sessions currently
+ * checked out by an in-flight turn — aborting that turn — so close() does not
+ * resolve while a claude PTY still runs.
  */
 export class SessionPool {
   readonly #bridge: ClaudeCodeBridge;
   readonly #size: number;
   readonly #idle: string[] = [];
   readonly #waiters: Waiter[] = [];
+  readonly #checkedOut = new Set<string>();
   #closed = false;
 
   constructor(options: SessionPoolOptions) {
@@ -39,15 +42,22 @@ export class SessionPool {
   }
 
   async start(): Promise<void> {
-    for (let i = 0; i < this.#size; i++) {
-      const { id } = await this.#bridge.startSession({});
-      this.#idle.push(id);
+    try {
+      for (let i = 0; i < this.#size; i++) {
+        const { id } = await this.#bridge.startSession({});
+        this.#idle.push(id);
+      }
+    } catch (err) {
+      const warmed = this.#idle.splice(0);
+      await Promise.allSettled(warmed.map((id) => this.#bridge.close(id)));
+      throw err;
     }
   }
 
   async withSession<T>(fn: (sessionId: string) => Promise<T>): Promise<T> {
     if (this.#closed) throw new Error("pool is closed");
     const sessionId = await this.#acquire();
+    this.#checkedOut.add(sessionId);
     try {
       await this.#bridge.clear(sessionId);
       const result = await fn(sessionId);
@@ -64,7 +74,8 @@ export class SessionPool {
     for (const waiter of this.#waiters.splice(0)) {
       waiter.reject(new Error("pool is closed"));
     }
-    const ids = this.#idle.splice(0);
+    const ids = [...this.#idle.splice(0), ...this.#checkedOut];
+    this.#checkedOut.clear();
     await Promise.allSettled(ids.map((id) => this.#bridge.close(id)));
   }
 
@@ -77,8 +88,10 @@ export class SessionPool {
   }
 
   #release(sessionId: string): void {
+    this.#checkedOut.delete(sessionId);
     const waiter = this.#waiters.shift();
     if (waiter) {
+      this.#checkedOut.add(sessionId);
       waiter.resolve(sessionId);
       return;
     }
@@ -92,6 +105,7 @@ export class SessionPool {
   }
 
   async #replace(sessionId: string): Promise<void> {
+    this.#checkedOut.delete(sessionId);
     try {
       await this.#bridge.close(sessionId);
     } catch {

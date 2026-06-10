@@ -172,6 +172,17 @@ const DEFAULT_AUTO_CONFIRM_RETRY_INTERVAL_MS = 3_000;
  */
 const CLEAR_ESCAPE_SETTLE_MS = 50;
 /**
+ * Pause after writing /clear before clear() resolves, giving the TUI time
+ * to process the command before the pool hands the session to the next
+ * turn (whose prompt arrives over the MCP channel, a separate transport
+ * that does not queue behind PTY keystrokes). A blind delay, not a
+ * readback: it narrows the race window rather than closing it. The
+ * fast-follow is to scan PTY output for the post-/clear redraw like the
+ * auto-confirm scanner does. /clear completes locally (no network), so
+ * 300ms is generous; against multi-second turns it is negligible latency.
+ */
+const CLEAR_COMMAND_SETTLE_MS = 300;
+/**
  * Maximum number of blind `\r` writes the scanner will emit. 6 covers a
  * ~20s boot window (3 + 5*3 = 18s of the 30s Bridge.startTimeoutMs default)
  * while keeping stray-empty-turn fallout bounded if claude already booted.
@@ -429,8 +440,10 @@ export class ClaudeCodeSupervisor implements Supervisor {
    *
    * Delivery is fire-and-forget — the PTY write is a no-op if the process
    * already exited, and a successful return does not confirm the TUI processed
-   * the command. Callers must ensure the session is idle (no in-flight turn)
-   * before calling.
+   * the command. After writing /clear the method waits CLEAR_COMMAND_SETTLE_MS
+   * before resolving; this narrows (does not close) the race against the next
+   * turn's MCP-delivered prompt. Callers must ensure the session is idle (no
+   * in-flight turn) before calling.
    */
   async clear(sessionId: string): Promise<void> {
     const launcher = this.#launcher;
@@ -444,6 +457,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
     launcher.write("\x1b");
     await new Promise((resolve) => setTimeout(resolve, CLEAR_ESCAPE_SETTLE_MS));
     launcher.write("/clear\r");
+    await new Promise((resolve) => setTimeout(resolve, CLEAR_COMMAND_SETTLE_MS));
   }
 
   async close(_sessionId: string): Promise<void> {

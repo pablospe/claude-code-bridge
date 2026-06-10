@@ -166,7 +166,6 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       headers: {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
-        connection: "keep-alive",
       },
     });
   }

@@ -148,6 +148,67 @@ describe("SessionPool", () => {
     await pool.close();
   });
 
+  test("start() closes already-warmed sessions if a later warm-up fails", async () => {
+    const bridge = makeBridge([]);
+    const closed: string[] = [];
+    const realStart = bridge.startSession.bind(bridge);
+    const realClose = bridge.close.bind(bridge);
+    bridge.close = ((sessionId: string) => {
+      closed.push(sessionId);
+      return realClose(sessionId);
+    }) as typeof bridge.close;
+    // First warm-up succeeds; the second rejects, leaking the first unless
+    // start() cleans up.
+    let startCalls = 0;
+    let firstId = "";
+    bridge.startSession = ((options) => {
+      startCalls += 1;
+      if (startCalls > 1) return Promise.reject(new Error("startSession boom"));
+      return realStart(options).then((res) => {
+        firstId = res.id;
+        return res;
+      });
+    }) as typeof bridge.startSession;
+
+    const pool = new SessionPool({ bridge, size: 2 });
+    await expect(pool.start()).rejects.toThrow("startSession boom");
+    expect(closed).toContain(firstId);
+  });
+
+  test("close() closes a session checked out by an in-flight turn", async () => {
+    const bridge = makeBridge([]);
+    const closed: string[] = [];
+    const realClose = bridge.close.bind(bridge);
+    bridge.close = ((sessionId: string) => {
+      closed.push(sessionId);
+      return realClose(sessionId);
+    }) as typeof bridge.close;
+
+    const pool = new SessionPool({ bridge, size: 1 });
+    await pool.start();
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    let heldId = "";
+    const first = pool
+      .withSession(async (sessionId) => {
+        heldId = sessionId;
+        await gate;
+      })
+      .then(
+        () => undefined,
+        () => undefined,
+      );
+    // Let the turn acquire the session, then close the pool while it is held.
+    await new Promise((r) => setTimeout(r, 20));
+    await pool.close();
+    // close() must have closed the checked-out session, not deferred it.
+    expect(closed).toContain(heldId);
+    releaseFirst();
+    await first;
+  });
+
   test("a turn in flight at close() time gets its session closed on release", async () => {
     const bridge = makeBridge([]);
     const closed: string[] = [];
