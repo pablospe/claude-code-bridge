@@ -4,6 +4,8 @@ import { expect, test } from "bun:test";
 
 // Un-skip in the final wiring task (flip test.todo -> test).
 test.todo("POST /v1/chat/completions round-trips a turn through the bridge", async () => {
+  // @ts-expect-error ./api.ts arrives in the final wiring task; this
+  // directive then becomes an error itself, forcing its removal there.
   const { runApi } = await import("./api.ts");
   const api = await runApi({
     host: "127.0.0.1",
