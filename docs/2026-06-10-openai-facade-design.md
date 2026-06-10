@@ -94,19 +94,26 @@ already passes `--strict-mcp-config`, `--setting-sources project,local`, and
 `--disable-slash-commands`, but **plugins and hooks still load** — that is
 the gap.
 
-Decision: a `cleanSession: true` supervisor option, implemented as:
+Decision (verified empirically on claude 2.1.170): a `cleanSession: true`
+supervisor option implemented as the dev-flag trim **minus**
+`--disable-slash-commands`. It keeps `--strict-mcp-config` and
+`--setting-sources project,local`; on claude >= 2.1.169 that user-tier
+exclusion also drops user-enabled plugins (claude-mem) and user hooks, which
+is the cleanliness we want. `--disable-slash-commands` is omitted so `clear()`
+can type `/clear` into the TUI. Only valid with **dev-flag channel mode**:
+plugin mode resolves ccb's channel through the user tier this exclusion
+removes. Do **not** add `--settings '{"disableAllHooks":true}'` — it breaks the
+channels-to-MCP binding the same way.
 
-- **Primary: `--safe-mode`** (requires claude >= 2.1.169; 2.1.170 installed).
-  Disables plugins, hooks, MCP servers, skills, CLAUDE.md, and auto-memory
-  while preserving auth and interactive mode. Only valid with **dev-flag
-  channel mode**, where ccb's channel arrives via explicit `--mcp-config`;
-  in plugin mode the channel itself is a plugin and safe-mode would sever it.
-  Open question to be settled by the first smoke test: whether safe-mode
-  honors an explicit `--mcp-config`. If it does not:
-- **Fallback: `CLAUDE_CONFIG_DIR=<fresh dir>`** with the operator's
-  `~/.claude/.credentials.json` copied in (mode 0600). On Linux auth is that
-  one file, so login survives. Known caveats: GitHub issues report the var
-  is partially respected in some paths, and trust/onboarding state is lost.
+Two candidates were rejected by the first smoke test:
+
+- **`--safe-mode`** disables ALL MCP servers, including the explicitly passed
+  `--mcp-config` channel, so the bridge channel never connects and
+  `startSession` times out.
+- **`CLAUDE_CONFIG_DIR=<fresh dir>`** lets the MCP server connect and inbound
+  delivery work, but the channels-to-MCP binding fails ("no MCP server
+  configured with that name") so claude replies in the TUI instead of calling
+  `bridge_reply` — the env var is only partially respected (a claude bug).
 
 `raw-model mode` is independent of cleanliness: pool sessions also launch
 with Claude Code's own tools disallowed, so the only output path is
@@ -185,8 +192,9 @@ Red-first ordering; each component gets a failing test before code.
    - request validation and error shapes
 3. **Real-claude smokes (documented commands, SMOKE.md):**
    - clean boot: spawn with `cleanSession`, assert channel connects and no
-     operator plugins/hooks are present — **this is smoke #1 and settles the
-     safe-mode vs CLAUDE_CONFIG_DIR question**
+     operator plugins/hooks are present — **smoke #1; RESOLVED: cleanSession =
+     the user-tier exclusion without `--disable-slash-commands`; safe-mode and
+     CLAUDE_CONFIG_DIR rejected (see "Clean session launch")**
    - `/clear` injection: two requests, assert the second sees no first-
      request context
    - tool round-trip: `tools` request → `tool_calls` → `role:"tool"`
@@ -195,8 +203,9 @@ Red-first ordering; each component gets a failing test before code.
 
 ## Risks
 
-- **`--safe-mode` may sever the dev-flag channel** — settled empirically by
-  smoke #1; fallback documented above.
+- **`--safe-mode` severs the dev-flag channel** — confirmed by smoke #1, so
+  `cleanSession` uses the user-tier exclusion instead (see "Clean session
+  launch").
 - **`/clear` PTY injection** assumes an idle session with an empty input
   box; pool discipline guarantees idleness, the smoke test guarantees the
   write itself works.

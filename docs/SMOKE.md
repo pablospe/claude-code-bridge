@@ -464,14 +464,17 @@ in one terminal and leave it running:
 bun apps/ccb/src/cli.ts api --supervisor claude --pool-size 1
 ```
 
-### Smoke 1 — clean boot (decision gate)
+### Smoke 1 — clean boot
 
-The pool session must boot with --safe-mode AND still connect the ccb
-channel. Watch the server terminal: a successful boot prints the listening
-line and the first request below succeeds. If startSession times out, safe
-mode severed the --mcp-config channel: switch cleanSession to the
-CLAUDE_CONFIG_DIR fallback documented in
-docs/2026-06-10-openai-facade-design.md and re-run.
+Decision gate RESOLVED (claude 2.1.170): cleanSession is the user-tier
+exclusion (`--strict-mcp-config` + `--setting-sources project,local`, which
+also drops user-enabled plugins and hooks) WITHOUT `--disable-slash-commands`,
+so clear() can still inject /clear. Two candidates were rejected: `--safe-mode`
+severs the `--mcp-config` channel (startSession times out), and
+`CLAUDE_CONFIG_DIR` breaks the channels-to-MCP binding (claude replies in the
+TUI instead of bridge_reply). The pool session boots with the ccb channel
+connected; watch the server terminal for the listening line, then the request
+below succeeds.
 
 ```bash
 curl -s http://127.0.0.1:18485/v1/chat/completions \

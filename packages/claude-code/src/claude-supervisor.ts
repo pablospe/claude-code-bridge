@@ -88,12 +88,16 @@ export interface ClaudeCodeSupervisorOptions {
    */
   readonly hooks?: { readonly events: ReadonlyArray<HookEvent> };
   /**
-   * Launch the driven session with --safe-mode: no operator plugins, hooks,
-   * MCP servers, skills, CLAUDE.md, or auto-memory. Requires claude >= 2.1.169
-   * and dev-flag channels (the channel arrives via --mcp-config; in plugin
-   * mode safe-mode would sever the channel itself). Replaces the
-   * --setting-sources/--disable-slash-commands trim (slash commands must stay
-   * available for clear()).
+   * Drop the operator's user-tier customizations from the driven session
+   * while keeping the bridge channel functional. Implemented as the
+   * dev-flag trim (--strict-mcp-config + --setting-sources project,local —
+   * which on claude >= 2.1.169 also excludes user-enabled plugins and
+   * hooks) minus --disable-slash-commands, which clear() needs to inject
+   * /clear. Verified empirically: --safe-mode severs the --mcp-config
+   * channel, and CLAUDE_CONFIG_DIR breaks the channels-to-MCP binding
+   * (claude replies in the TUI instead of bridge_reply), so neither is
+   * usable here. Requires dev-flag channels: plugin mode resolves the ccb
+   * channel through the user tier this option excludes.
    */
   readonly cleanSession?: boolean;
   /**
@@ -498,12 +502,11 @@ export class ClaudeCodeSupervisor implements Supervisor {
       // so dropping the user tier doesn't cut off the channel. (Plugin mode
       // resolves the ccb plugin THROUGH the user-tier marketplace, so the same
       // exclusion would break it — hence this stays out of the plugin branch.)
-      if (this.#cleanSession) {
-        // --safe-mode supersedes the user-tier trim AND keeps /clear usable
-        // (--disable-slash-commands would block the clear() injection).
-        args.push("--safe-mode");
-      } else {
-        args.push("--setting-sources", "project,local");
+      args.push("--setting-sources", "project,local");
+      if (!this.#cleanSession) {
+        // A programmatic single-turn driver doesn't need the slash-command
+        // surface — except clear(), which types /clear into the TUI. Clean
+        // sessions therefore keep slash commands available.
         args.push("--disable-slash-commands");
       }
     } else {

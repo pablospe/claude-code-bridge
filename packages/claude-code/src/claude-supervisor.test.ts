@@ -993,16 +993,18 @@ test("clear rejects before start with 'not started'", async () => {
   await expect(supervisor.clear(FAKE_SESSION_ID)).rejects.toThrow("not started");
 });
 
-test("cleanSession swaps the user-tier trimming flags for --safe-mode", async () => {
+test("cleanSession keeps user-tier exclusion without --disable-slash-commands", async () => {
   const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
     channels: "dev-flag",
     cleanSession: true,
   });
   await startResult;
   const args = [...launcher.args];
-  expect(args).toContain("--safe-mode");
+  expect(args).toContain("--strict-mcp-config");
+  expect(args).toContain("--setting-sources");
+  expect(args[args.indexOf("--setting-sources") + 1]).toBe("project,local");
+  expect(args).not.toContain("--safe-mode");
   expect(args).not.toContain("--disable-slash-commands");
-  expect(args).not.toContain("--setting-sources");
   await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
@@ -1015,6 +1017,7 @@ test("default keeps the existing trimming flags and no --safe-mode", async () =>
   const args = [...launcher.args];
   expect(args).not.toContain("--safe-mode");
   expect(args).toContain("--disable-slash-commands");
+  expect(args).toContain("--setting-sources");
   await helloClient.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
