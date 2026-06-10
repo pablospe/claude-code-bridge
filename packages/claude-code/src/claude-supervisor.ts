@@ -161,6 +161,13 @@ const DEFAULT_AUTO_CONFIRM_INITIAL_DELAY_MS = 500;
  */
 const DEFAULT_AUTO_CONFIRM_RETRY_INTERVAL_MS = 3_000;
 /**
+ * Pause between the Escape and the /clear write so the TUI processes the
+ * key and re-renders an empty input box before receiving the command. The
+ * TUI reacts to a keypress well within one frame (~16ms); 50ms adds margin
+ * without meaningfully delaying the pool's acquire path.
+ */
+const CLEAR_ESCAPE_SETTLE_MS = 50;
+/**
  * Maximum number of blind `\r` writes the scanner will emit. 6 covers a
  * ~20s boot window (3 + 5*3 = 18s of the 30s Bridge.startTimeoutMs default)
  * while keeping stray-empty-turn fallout bounded if claude already booted.
@@ -177,8 +184,10 @@ const AUTO_CONFIRM_BUFFER_MAX = Math.max(4096, DEV_CHANNELS_CONFIRM_HINT.length 
 
 const ALLOWED_TOOLS = "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done";
 
+// Best-effort denylist of claude's built-in tool surface; --allowed-tools still
+// pre-approves only the bridge tools, so anything missed here prompts rather than runs.
 const DISALLOWED_BUILTIN_TOOLS =
-  "Bash Edit Write Read Glob Grep WebFetch WebSearch Task NotebookEdit TodoWrite";
+  "Bash BashOutput KillShell Edit MultiEdit Write Read Glob Grep WebFetch WebSearch Task NotebookEdit TodoWrite SlashCommand Skill ExitPlanMode";
 
 /**
  * Resolve the absolute path to `packages/mcp-channel/src/bin.ts` so the
@@ -411,6 +420,14 @@ export class ClaudeCodeSupervisor implements Supervisor {
     launcher.sendSignal("SIGINT");
   }
 
+  /**
+   * Write `/clear` into the TUI to reset the session's conversation context.
+   *
+   * Delivery is fire-and-forget — the PTY write is a no-op if the process
+   * already exited, and a successful return does not confirm the TUI processed
+   * the command. Callers must ensure the session is idle (no in-flight turn)
+   * before calling.
+   */
   async clear(sessionId: string): Promise<void> {
     const launcher = this.#launcher;
     if (!this.#ctx || !launcher) throw new Error("supervisor not started");
@@ -421,7 +438,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
     // half-typed text); the pool only clears idle sessions so the input box
     // is otherwise empty.
     launcher.write("\x1b");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, CLEAR_ESCAPE_SETTLE_MS));
     launcher.write("/clear\r");
   }
 
