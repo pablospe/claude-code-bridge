@@ -78,8 +78,17 @@ export class SessionPool {
 
   #release(sessionId: string): void {
     const waiter = this.#waiters.shift();
-    if (waiter) waiter.resolve(sessionId);
-    else this.#idle.push(sessionId);
+    if (waiter) {
+      waiter.resolve(sessionId);
+      return;
+    }
+    if (this.#closed) {
+      // close() already drained #idle; a turn that was in flight at close
+      // time would otherwise strand its session there unclosed.
+      void this.#bridge.close(sessionId).catch(() => undefined);
+      return;
+    }
+    this.#idle.push(sessionId);
   }
 
   async #replace(sessionId: string): Promise<void> {

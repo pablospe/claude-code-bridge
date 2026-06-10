@@ -147,4 +147,34 @@ describe("SessionPool", () => {
     expect(String(await secondError)).toMatch(/respawn failed/);
     await pool.close();
   });
+
+  test("a turn in flight at close() time gets its session closed on release", async () => {
+    const bridge = makeBridge([]);
+    const closed: string[] = [];
+    const realClose = bridge.close.bind(bridge);
+    bridge.close = ((sessionId: string) => {
+      closed.push(sessionId);
+      return realClose(sessionId);
+    }) as typeof bridge.close;
+
+    const pool = new SessionPool({ bridge, size: 1 });
+    await pool.start();
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    let heldId = "";
+    const first = pool.withSession(async (sessionId) => {
+      heldId = sessionId;
+      await gate;
+    });
+    // Let the turn acquire the session, then close the pool around it.
+    await new Promise((r) => setTimeout(r, 20));
+    await pool.close();
+    releaseFirst();
+    await first;
+    // The release path must close the session itself: close() already
+    // drained #idle, so parking it there would leak it.
+    expect(closed).toContain(heldId);
+  });
 });
