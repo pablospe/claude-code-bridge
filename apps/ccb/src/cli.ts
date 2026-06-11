@@ -14,7 +14,10 @@ import { runHooksConfig } from "./hooks-config.ts";
 import { isValidEndpoint, runMcpConfig } from "./mcp-config.ts";
 import { runServe, type ServeFormat } from "./serve.ts";
 
-const VERSION = "0.0.1";
+// Injected from the root package.json by `bun build --define` (scripts/build.ts)
+// so the published CLI reports the npm package version; source runs fall back.
+declare const CCB_VERSION: string | undefined;
+const VERSION = typeof CCB_VERSION === "string" ? CCB_VERSION : "0.0.0-dev";
 
 export type SupervisorChoice = "mock" | "claude";
 

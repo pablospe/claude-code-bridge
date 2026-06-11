@@ -45,10 +45,12 @@ test("ccb --help prints usage and lists demo, mcp-config, and serve commands", a
   expect(stdout).toMatch(/\bserve\b/);
 });
 
-test("ccb --version prints a version string", async () => {
+test("ccb --version prints the dev fallback when run from source", async () => {
   const { exitCode, stdout } = await runCli(["--version"]);
   expect(exitCode).toBe(0);
-  expect(stdout.trim().length).toBeGreaterThan(0);
+  // The real version is injected from the root package.json at build time via
+  // `bun build --define` (see scripts/build.ts); source runs get the fallback.
+  expect(stdout.trim()).toBe("0.0.0-dev");
 });
 
 test("ccb demo --help lists supported flags", async () => {

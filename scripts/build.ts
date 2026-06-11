@@ -62,16 +62,19 @@ async function clean(): Promise<void> {
   await mkdir(BIN_DIR, { recursive: true });
 }
 
-async function bundle(spec: BundleSpec): Promise<void> {
+async function bundle(spec: BundleSpec, version: string): Promise<void> {
   const entry = resolve(ROOT, spec.entry);
   const outfile = resolve(ROOT, spec.outfile);
   const externalFlags = EXTERNALS.flatMap((dep) => ["--external", dep]);
+  // Single source of truth for the CLI version: the root package.json that
+  // npm publishes. Injected as the CCB_VERSION compile-time constant.
+  const defineFlags = ["--define", `CCB_VERSION=${JSON.stringify(version)}`];
   // tsconfig.publish.json carries the @ccb/* paths map so bun build can
   // resolve workspace specifiers when the root package isn't itself a
   // workspace member (no node_modules/@ccb/ symlinks at the root).
   log(`[build] bundling ${spec.outfile}`);
   const result =
-    await $`bun build ${entry} --target=node --outfile=${outfile} --tsconfig-override=tsconfig.publish.json ${externalFlags}`
+    await $`bun build ${entry} --target=node --outfile=${outfile} --tsconfig-override=tsconfig.publish.json ${defineFlags} ${externalFlags}`
       .cwd(ROOT)
       .quiet()
       .nothrow();
@@ -101,9 +104,12 @@ async function emitDeclarations(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const { version } = (await Bun.file(resolve(ROOT, "package.json")).json()) as {
+    version: string;
+  };
   await clean();
   for (const spec of BUNDLES) {
-    await bundle(spec);
+    await bundle(spec, version);
   }
   await emitDeclarations();
   log("[build] done");
