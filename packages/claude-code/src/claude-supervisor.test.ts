@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -257,6 +257,54 @@ test("supervisor.start blocks until the channel server connects and says hello",
   await client.close();
   await supervisor.close(FAKE_SESSION_ID);
 });
+
+test("supervisor.start does not lose a hello that arrives while config files are written", async () => {
+  // Boot race regression test: serverEndpoint becomes visible before start()
+  // finishes its async config writes. A client that connects in that window
+  // sends its hello before the start gate exists; the gate must still clear.
+  // The injected writeFile parks start() inside the window until the hello
+  // has been sent.
+  const factory = captureLauncherFactory();
+  let releaseWrite!: () => void;
+  const writeGate = new Promise<void>((r) => {
+    releaseWrite = r;
+  });
+  const supervisor = new ClaudeCodeSupervisor({
+    channels: "dev-flag",
+    launcherFactory: factory,
+    writeFile: async (...args) => {
+      await writeGate;
+      return writeFile(...(args as Parameters<typeof writeFile>));
+    },
+  });
+  const ctx: SupervisorContext = {
+    sessionId: FAKE_SESSION_ID,
+    emit: () => {},
+  };
+  const startResult = supervisor.start(ctx);
+  await waitFor(() => supervisor.serverEndpoint !== undefined);
+  const ep = supervisor.serverEndpoint;
+  if (!ep) throw new Error("serverEndpoint not set");
+  const { ControlClient } = await import("@ccb/mcp-channel");
+  const client = new ControlClient({
+    endpoint: ep.endpoint,
+    sessionId: FAKE_SESSION_ID,
+    onDeliver: () => undefined,
+  });
+  await client.connect();
+  // Give the hello time to be fully processed by the ControlServer while
+  // start() is still parked in writeFile.
+  await new Promise((r) => setTimeout(r, 100));
+  releaseWrite();
+  await Promise.race([
+    startResult,
+    new Promise((_, rejectRace) =>
+      setTimeout(() => rejectRace(new Error("start() never resolved: hello was lost")), 3000),
+    ),
+  ]);
+  await client.close();
+  await supervisor.close(FAKE_SESSION_ID);
+}, 20_000);
 
 test("supervisor.start does not resolve on a hello with the wrong sessionId", async () => {
   // The gate is keyed on the supervisor's session id; a hello carrying any
@@ -908,6 +956,8 @@ test("peer-close: synthesizes crash event pair when the channel client drops", a
   // session.ended; close is a no-op for this session id.
 });
 
+// 20s budget: supervisor.close() has an internal 5s graceful-shutdown timeout,
+// so under full-suite parallel load this test can exceed bun's 5s default.
 test("hooks option: writes a temp settings.json and passes its path via --settings", async () => {
   const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
     channels: "dev-flag",
@@ -941,7 +991,7 @@ test("hooks option: writes a temp settings.json and passes its path via --settin
     () => false,
   );
   expect(stillThere).toBe(false);
-});
+}, 20_000);
 
 test("hooks option: --settings is omitted when hooks option is not set", async () => {
   const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({

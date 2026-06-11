@@ -305,7 +305,6 @@ export class ClaudeCodeSupervisor implements Supervisor {
     const server = new ControlServer();
     const endpoint = await server.listen({ host: "127.0.0.1", port: 0 });
     this.#server = server;
-    this.#serverEndpoint = endpoint;
     server.on("tool", (sid, name, args) => {
       if (sid !== sessionId) return;
       const current = this.#ctx;
@@ -333,6 +332,12 @@ export class ClaudeCodeSupervisor implements Supervisor {
       if (!current) return;
       emitCrashEvents(current);
     });
+    // Arm the start gate BEFORE publishing the endpoint: boot continues with
+    // async config writes below, and a client that connects as soon as the
+    // endpoint is visible would otherwise land its hello before the gate
+    // listener exists and hang start() forever.
+    const helloGate = this.#armChannelHelloGate(sessionId, server);
+    this.#serverEndpoint = endpoint;
 
     const tempDir = await mkdtemp(join(tmpdir(), "ccb-claude-mcp-"));
     this.#tempDir = tempDir;
@@ -390,6 +395,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
       env.CCB_SESSION_ID = sessionId;
       const launcher = this.#launcherFactory("claude", args, { env });
       this.#launcher = launcher;
+      helloGate.attachExitFailFast(launcher);
     } catch (err) {
       await this.#cleanupTempFiles();
       this.#settingsPath = undefined;
@@ -417,7 +423,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
     // sendMessage rejects with "no connected client". The wait itself is
     // unbounded inside the supervisor; Bridge.startTimeoutMs is the single
     // bound on supervisor.start at the layer above.
-    await this.#waitForChannelHello(sessionId, server);
+    await helloGate.promise;
   }
 
   async sendMessage(sessionId: string, messageId: string, content: string): Promise<void> {
@@ -545,37 +551,57 @@ export class ClaudeCodeSupervisor implements Supervisor {
   }
 
   /**
-   * Resolve once the channel server's first `hello` for this session arrives
-   * at the ControlServer. Returns a promise that never rejects on its own; the
-   * caller (`Bridge.startSession` via `startTimeoutMs`) is the single source of
+   * Install the start gate: the returned promise resolves once the channel
+   * server's first `hello` for this session arrives at the ControlServer.
+   * Armed before the endpoint is published (so an early hello cannot be
+   * lost); the launcher's exit fail-fast is attached later via
+   * `attachExitFailFast` because the launcher does not exist yet at arming
+   * time. The promise never resolves on its own otherwise; the caller
+   * (`Bridge.startSession` via `startTimeoutMs`) is the single source of
    * truth for bounding this wait so the timeout story stays in one place.
    */
-  #waitForChannelHello(sessionId: string, server: ControlServer): Promise<void> {
-    return new Promise((resolve, reject) => {
-      let disposeExit: (() => void) | undefined;
-      const onHello = (sid: string): void => {
-        if (sid !== sessionId) return;
-        server.off("hello", onHello);
-        disposeExit?.();
-        resolve();
-      };
-      server.on("hello", onHello);
+  #armChannelHelloGate(
+    sessionId: string,
+    server: ControlServer,
+  ): { promise: Promise<void>; attachExitFailFast: (launcher: LauncherHandle) => void } {
+    let resolveGate!: () => void;
+    let rejectGate!: (err: Error) => void;
+    let settled = false;
+    let disposeExit: (() => void) | undefined;
+    const promise = new Promise<void>((resolve, reject) => {
+      resolveGate = resolve;
+      rejectGate = reject;
+    });
+    const onHello = (sid: string): void => {
+      if (sid !== sessionId) return;
+      server.off("hello", onHello);
+      disposeExit?.();
+      settled = true;
+      resolveGate();
+    };
+    server.on("hello", onHello);
+    return {
+      promise,
       // Fail fast if claude exits before the channel server connects (bad
       // flag, crash, unconfirmed dev-channels gate). Without this the wait
       // only ends on `hello`, so a boot that has already failed still blocks
       // for the full Bridge.startTimeoutMs before the timeout path fires.
       // Bridge.startSession runs supervisor.close() on this rejection.
-      disposeExit = this.#launcher?.onExit(({ code, signal }) => {
-        server.off("hello", onHello);
-        reject(
-          new Error(
-            `claude exited during boot before the channel connected (code=${code}${
-              signal ? `, signal=${signal}` : ""
-            })`,
-          ),
-        );
-      });
-    });
+      attachExitFailFast: (launcher: LauncherHandle): void => {
+        disposeExit = launcher.onExit(({ code, signal }) => {
+          if (settled) return;
+          server.off("hello", onHello);
+          settled = true;
+          rejectGate(
+            new Error(
+              `claude exited during boot before the channel connected (code=${code}${
+                signal ? `, signal=${signal}` : ""
+              })`,
+            ),
+          );
+        });
+      },
+    };
   }
 
   /**
