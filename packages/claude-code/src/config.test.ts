@@ -118,3 +118,14 @@ test("generateHooksSettings: shell-quotes shell metacharacters in args", () => {
   });
   expect(s.hooks.PreToolUse?.[0]?.hooks[0]?.command).toBe("bun '$(date).ts' PreToolUse");
 });
+
+test("generateMcpConfig sets CCB_PERMISSION_RELAY only when enablePermissionRelay is set", () => {
+  const base = generateMcpConfig({ sessionId: "s", endpoint: "tcp://127.0.0.1:1" });
+  expect(base.mcpServers.ccb.env.CCB_PERMISSION_RELAY).toBeUndefined();
+  const enabled = generateMcpConfig({
+    sessionId: "s",
+    endpoint: "tcp://127.0.0.1:1",
+    enablePermissionRelay: true,
+  });
+  expect(enabled.mcpServers.ccb.env.CCB_PERMISSION_RELAY).toBe("1");
+});

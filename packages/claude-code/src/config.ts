@@ -3,6 +3,7 @@ export interface McpConfigOptions {
   readonly endpoint: string;
   readonly command?: string;
   readonly args?: readonly string[];
+  readonly enablePermissionRelay?: boolean;
 }
 
 export interface McpConfig {
@@ -13,6 +14,7 @@ export interface McpConfig {
       readonly env: {
         readonly CCB_BRIDGE_ENDPOINT: string;
         readonly CCB_SESSION_ID: string;
+        readonly CCB_PERMISSION_RELAY?: "1";
       };
     };
   };
@@ -32,6 +34,7 @@ export function generateMcpConfig(opts: McpConfigOptions): McpConfig {
         env: {
           CCB_BRIDGE_ENDPOINT: opts.endpoint,
           CCB_SESSION_ID: opts.sessionId,
+          ...(opts.enablePermissionRelay ? { CCB_PERMISSION_RELAY: "1" as const } : {}),
         },
       },
     },
