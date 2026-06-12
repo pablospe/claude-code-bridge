@@ -11,6 +11,11 @@ dist/
 .ccb-data/
 *.log
 
+# local demo recordings (published to asciinema; not shipped in the repo)
+demo*.gif
+demo*.mp4
+*.cast
+
 # claude code personal overlay (auto-written by `claude` on permission approvals)
 .claude/settings.local.json
 
