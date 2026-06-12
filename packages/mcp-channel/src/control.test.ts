@@ -1186,6 +1186,61 @@ test("ControlServer rejects a 'hook' frame received before any hello", async () 
   await server.close();
 });
 
+test("ControlClient.sendPermissionRequest reaches the ControlServer permission-request listener", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+  type Req = {
+    sessionId: string;
+    requestId: string;
+    toolName: string;
+    description: string;
+    inputPreview: string;
+  };
+  const reqs: Req[] = [];
+  server.on("permission-request", (sessionId, requestId, toolName, description, inputPreview) => {
+    reqs.push({ sessionId, requestId, toolName, description, inputPreview });
+  });
+  const client = new ControlClient({
+    endpoint: info.endpoint,
+    sessionId: "sess-p1",
+    onDeliver: () => {},
+  });
+  await client.connect();
+  await client.sendPermissionRequest("abcde", "Bash", "run ls", '{"command":"ls"}');
+  await until(() => reqs.length > 0);
+  expect(reqs).toEqual([
+    {
+      sessionId: "sess-p1",
+      requestId: "abcde",
+      toolName: "Bash",
+      description: "run ls",
+      inputPreview: '{"command":"ls"}',
+    },
+  ]);
+  await client.close();
+  await server.close();
+});
+
+test("ControlServer.respond delivers a permission_response to the client callback", async () => {
+  const server = new ControlServer();
+  const info = await server.listen({ host: "127.0.0.1", port: 0 });
+  const verdicts: Array<{ requestId: string; behavior: "allow" | "deny" }> = [];
+  const client = new ControlClient({
+    endpoint: info.endpoint,
+    sessionId: "sess-p2",
+    onDeliver: () => {},
+    onPermissionResponse: (requestId, behavior) => {
+      verdicts.push({ requestId, behavior });
+    },
+  });
+  await client.connect();
+  await server.respond("sess-p2", "abcde", "deny");
+  await until(() => verdicts.length > 0);
+  expect(verdicts).toEqual([{ requestId: "abcde", behavior: "deny" }]);
+  await client.close();
+  await server.close();
+});
+
 test("ControlServer ignores malformed 'hook' frames (missing required fields)", async () => {
   const server = new ControlServer();
   const info = await server.listen({ host: "127.0.0.1", port: 0 });
