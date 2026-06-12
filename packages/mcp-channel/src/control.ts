@@ -530,7 +530,11 @@ export class ControlClient {
         return;
       }
       if (msg.type === "permission_response") {
-        this.#onPermissionResponse?.(msg.requestId, msg.behavior);
+        try {
+          this.#onPermissionResponse?.(msg.requestId, msg.behavior);
+        } catch (err) {
+          console.error(`control: onPermissionResponse threw: ${String(err)}`);
+        }
         return;
       }
       if (msg.type === "close") {
