@@ -79,6 +79,10 @@ export const formatPretty: Formatter = (event) => {
       return event.reason !== undefined
         ? `[session.ended] reason=${event.reason}`
         : "[session.ended]";
+    case "permission.requested":
+      return `[permission.requested] ${event.requestId} ${event.toolName} ${JSON.stringify(event.description)}`;
+    case "permission.resolved":
+      return `[permission.resolved] ${event.requestId} ${event.outcome}`;
     default: {
       const _exhaustive: never = event;
       throw new Error(`unknown event: ${String(_exhaustive)}`);

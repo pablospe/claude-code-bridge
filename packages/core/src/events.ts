@@ -22,4 +22,30 @@ export type BridgeEvent =
        */
       payload: { event: string; data: unknown };
     }
-  | { type: "session.ended"; sessionId: string; reason?: string };
+  | { type: "session.ended"; sessionId: string; reason?: string }
+  | {
+      type: "permission.requested";
+      sessionId: string;
+      requestId: string;
+      toolName: string;
+      /** Human-readable summary of the call (claude's `description`). */
+      description: string;
+      /** Tool args as a JSON string, truncated to 200 chars by the platform. */
+      inputPreview: string;
+    }
+  | {
+      type: "permission.resolved";
+      sessionId: string;
+      requestId: string;
+      /**
+       * "allow" / "deny" — a consumer verdict the bridge sent over the wire.
+       * "unanswered-remotely" — the bridge stopped waiting; the real outcome is
+       *   unknown (read the subsequent tool.event).
+       * "aborted" — the session ended with the request still open.
+       * "terminal" — RESERVED, never emitted today (no platform signal exists
+       *   for the local terminal winning the race).
+       */
+      outcome: "allow" | "deny" | "unanswered-remotely" | "aborted" | "terminal";
+      /** Optional audit metadata persisted locally; never crosses the wire. */
+      approver?: { userId: string; displayName?: string };
+    };
