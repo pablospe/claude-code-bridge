@@ -2,6 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  NotificationSchema,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
@@ -36,6 +37,13 @@ export type OnToolCallback = (
   args: Record<string, unknown>,
 ) => void | Promise<void>;
 
+export interface PermissionRequest {
+  readonly requestId: string;
+  readonly toolName: string;
+  readonly description: string;
+  readonly inputPreview: string;
+}
+
 export interface CreateChannelServerOptions {
   readonly sessionId: string;
   readonly onTool?: OnToolCallback;
@@ -47,6 +55,15 @@ export interface CreateChannelServerOptions {
    * mid-handshake.
    */
   readonly onInitialized?: () => void;
+  /**
+   * Opt-in permission relay. The `claude/channel/permission` capability is
+   * declared only when this is true — it is a security-sensitive opt-in
+   * because the capability documents (and the live protocol confirms) that only
+   * channels that authenticate the sender should advertise it: whoever can
+   * answer through the channel can approve tool use in the session.
+   */
+  readonly enablePermissionRelay?: boolean;
+  readonly onPermissionRequest?: (req: PermissionRequest) => void | Promise<void>;
 }
 
 export interface DeliverOptions {
@@ -57,6 +74,7 @@ export interface DeliverOptions {
 export interface ChannelServerHandle {
   readonly server: Server;
   deliver(content: string, opts?: DeliverOptions): Promise<void>;
+  respondPermission(requestId: string, behavior: "allow" | "deny"): Promise<void>;
 }
 
 const INSTRUCTIONS =
@@ -124,19 +142,31 @@ const TOOLS: readonly Tool[] = [
 
 const TOOL_NAMES = new Set<ToolName>(["bridge_reply", "bridge_progress", "bridge_done"]);
 
+const PermissionRequestParamsSchema = z.object({
+  request_id: z.string(),
+  tool_name: z.string(),
+  description: z.string(),
+  input_preview: z.string(),
+});
+
 function isToolName(name: string): name is ToolName {
   return TOOL_NAMES.has(name as ToolName);
 }
 
 export function createChannelServer(options: CreateChannelServerOptions): ChannelServerHandle {
-  const { sessionId, onTool, onInitialized } = options;
+  const { sessionId, onTool, onInitialized, enablePermissionRelay, onPermissionRequest } = options;
 
   const server = new Server(
     { name: "ccb", version: "0.0.1" },
     {
       capabilities: {
         tools: {},
-        experimental: { "claude/channel": {} },
+        // The permission capability is opt-in because the docs require it only
+        // on channels that authenticate the sender — whoever can answer through
+        // the channel can approve tool use in the session.
+        experimental: enablePermissionRelay
+          ? { "claude/channel": {}, "claude/channel/permission": {} }
+          : { "claude/channel": {} },
       },
       instructions: INSTRUCTIONS,
     },
@@ -180,6 +210,27 @@ export function createChannelServer(options: CreateChannelServerOptions): Channe
     };
   });
 
+  if (enablePermissionRelay) {
+    // Use NotificationSchema.extend (SDK's zod v3) for the dispatch key so
+    // setNotificationHandler's AnyObjectSchema constraint is satisfied; parse
+    // params separately with the zod/v4 schema for type-safe field access.
+    const dispatchSchema = NotificationSchema.extend({
+      method: z.literal(
+        "notifications/claude/channel/permission_request",
+      ) as unknown as import("zod").ZodLiteral<"notifications/claude/channel/permission_request">,
+    });
+    server.setNotificationHandler(dispatchSchema, async (n) => {
+      const parsed = PermissionRequestParamsSchema.safeParse(n.params);
+      if (!parsed.success) return;
+      await onPermissionRequest?.({
+        requestId: parsed.data.request_id,
+        toolName: parsed.data.tool_name,
+        description: parsed.data.description,
+        inputPreview: parsed.data.input_preview,
+      });
+    });
+  }
+
   const deliver = async (content: string, opts?: DeliverOptions): Promise<void> => {
     const meta: Record<string, string> = opts?.meta ? validateWireMeta(opts.meta) : {};
     meta.session_id = sessionId;
@@ -192,5 +243,18 @@ export function createChannelServer(options: CreateChannelServerOptions): Channe
     });
   };
 
-  return { server, deliver };
+  // A verdict always answers a permission_request claude emitted after its own
+  // MCP handshake completed (bin.ts dials the control link only after
+  // `initialized`), so unlike deliver there is no mid-handshake drop window.
+  const respondPermission = async (
+    requestId: string,
+    behavior: "allow" | "deny",
+  ): Promise<void> => {
+    await server.notification({
+      method: "notifications/claude/channel/permission",
+      params: { request_id: requestId, behavior },
+    });
+  };
+
+  return { server, deliver, respondPermission };
 }
