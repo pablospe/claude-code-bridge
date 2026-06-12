@@ -163,6 +163,9 @@ async function startWithFakeLauncher(opts: {
   hooks?: { events: ReadonlyArray<"PreToolUse" | "PostToolUse" | "Stop"> };
   cleanSession?: boolean;
   rawModel?: boolean;
+  enablePermissionRelay?: boolean;
+  allowedBuiltinTools?: ReadonlyArray<string>;
+  onPermissionResponse?: (requestId: string, behavior: "allow" | "deny") => void;
 }): Promise<{
   supervisor: ClaudeCodeSupervisor;
   ctx: SupervisorContext;
@@ -186,6 +189,8 @@ async function startWithFakeLauncher(opts: {
     hooks: opts.hooks,
     cleanSession: opts.cleanSession,
     rawModel: opts.rawModel,
+    enablePermissionRelay: opts.enablePermissionRelay,
+    allowedBuiltinTools: opts.allowedBuiltinTools,
     launcherFactory: factory,
   });
   const emitted: BridgeEvent[] = [];
@@ -207,6 +212,7 @@ async function startWithFakeLauncher(opts: {
     endpoint: ep.endpoint,
     sessionId: FAKE_SESSION_ID,
     onDeliver: () => undefined,
+    ...(opts.onPermissionResponse ? { onPermissionResponse: opts.onPermissionResponse } : {}),
   });
   await helloClient.connect();
   await startResult;
@@ -1117,4 +1123,65 @@ test("cooperative close: does NOT synthesize crash events", async () => {
   expect(
     emitted.some((e) => e.type === "session.ended" && e.reason === CRASH_SESSION_ENDED_REASON),
   ).toBe(false);
+});
+
+test("permission-request from the channel surfaces as a permission.requested event", async () => {
+  const { supervisor, emitted, startResult, helloClient } = await startWithFakeLauncher({
+    channels: "dev-flag",
+    enablePermissionRelay: true,
+  });
+  await startResult;
+  await helloClient.sendPermissionRequest("abcde", "Bash", "run ls", "{}");
+  await waitFor(() => emitted.some((e) => e.type === "permission.requested"));
+  expect(emitted.find((e) => e.type === "permission.requested")).toEqual({
+    type: "permission.requested",
+    sessionId: FAKE_SESSION_ID,
+    requestId: "abcde",
+    toolName: "Bash",
+    description: "run ls",
+    inputPreview: "{}",
+  });
+  await helloClient.close();
+  await supervisor.close(FAKE_SESSION_ID);
+});
+
+test("supervisor.respond writes a permission_response frame to the channel client", async () => {
+  const verdicts: Array<{ requestId: string; behavior: string }> = [];
+  const { supervisor, startResult, helloClient } = await startWithFakeLauncher({
+    channels: "dev-flag",
+    enablePermissionRelay: true,
+    onPermissionResponse: (requestId, behavior) => {
+      verdicts.push({ requestId, behavior });
+    },
+  });
+  await startResult;
+  await supervisor.respond(FAKE_SESSION_ID, "abcde", "deny");
+  await waitFor(() => verdicts.length > 0);
+  expect(verdicts).toEqual([{ requestId: "abcde", behavior: "deny" }]);
+  await helloClient.close();
+  await supervisor.close(FAKE_SESSION_ID);
+});
+
+test("allowedBuiltinTools extends --allowed-tools and relay flag reaches mcp.json", async () => {
+  const { supervisor, launcher, startResult, helloClient } = await startWithFakeLauncher({
+    channels: "dev-flag",
+    enablePermissionRelay: true,
+    allowedBuiltinTools: ["Read", "Grep"],
+  });
+  await startResult;
+  const args = [...launcher.args];
+  const idx = args.indexOf("--allowed-tools");
+  expect(args[idx + 1]).toBe(
+    "mcp__ccb__bridge_reply mcp__ccb__bridge_progress mcp__ccb__bridge_done Read Grep",
+  );
+  expect(args).not.toContain("--disallowed-tools");
+  const mcpIdx = args.indexOf("--mcp-config");
+  const mcpPath = args[mcpIdx + 1];
+  if (!mcpPath) throw new Error("missing --mcp-config value");
+  const cfg = JSON.parse(await readFile(mcpPath, "utf8")) as {
+    mcpServers: { ccb: { env: Record<string, string> } };
+  };
+  expect(cfg.mcpServers.ccb.env.CCB_PERMISSION_RELAY).toBe("1");
+  await helloClient.close();
+  await supervisor.close(FAKE_SESSION_ID);
 });
