@@ -263,6 +263,11 @@ export class Bridge implements ClaudeCodeBridge {
     // Persist-before-send: durable record first; a store failure here means no
     // verdict crosses the wire. No retry on a wire failure after the persist —
     // notifications are fire-and-forget and a retry could double-apply.
+    // Note: the entry is already removed above, so if this append rejects the
+    // persisted JSONL keeps the permission.requested with no terminating
+    // resolved (a live subscriber still saw the bus emit). That dangling-log
+    // residue is the accepted cost of exactly-once + the "store failure → real
+    // error" contract; the consumer learns via the rejected promise.
     await this.#emitAwaited(session, {
       type: "permission.resolved",
       sessionId,
