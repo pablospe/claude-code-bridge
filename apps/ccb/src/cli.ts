@@ -128,6 +128,20 @@ function parseChannelsMode(value: string): ChannelsMode {
   throw new InvalidArgumentError("--channels must be one of: dev-flag, plugin");
 }
 
+export function parseAllowTools(value: string): string[] | "all" {
+  const items = value.split(",").map((s) => s.trim());
+  if (items.includes("all")) {
+    if (items.length > 1) {
+      throw new InvalidArgumentError("'all' cannot be combined with tool names");
+    }
+    return "all";
+  }
+  if (items.length === 0 || items.some((s) => s.length === 0)) {
+    throw new InvalidArgumentError("expected comma-separated tool names or 'all'");
+  }
+  return items;
+}
+
 export function buildProgram(): Command {
   const program = new Command();
   program
@@ -239,6 +253,11 @@ export function buildProgram(): Command {
     )
     .option("--store-dir <path>", "directory for per-session JSONL logs", ".ccb-data")
     .option("--api-key <key>", "require this bearer token on every request")
+    .option(
+      "--allow-tools <list>",
+      "enable claude's built-in tools: comma-separated names auto-approved (others denied), or 'all'",
+      parseAllowTools,
+    )
     .action(
       async (opts: {
         host: string;
@@ -248,6 +267,7 @@ export function buildProgram(): Command {
         supervisor: SupervisorChoice;
         storeDir: string;
         apiKey?: string;
+        allowTools?: string[] | "all";
       }) => {
         const api = await runApi(opts);
         process.stdout.write(`ccb api listening on ${api.url}/v1\n`);

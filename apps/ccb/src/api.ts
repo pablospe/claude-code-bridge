@@ -1,6 +1,6 @@
 import { claudeCodeSupervisorFactory, mockSupervisorFactory } from "@ccb/claude-code";
 import { Bridge, type SupervisorFactory } from "@ccb/core";
-import { SessionPool, startApiServer } from "@ccb/http";
+import { createAllowlistPolicy, SessionPool, startApiServer } from "@ccb/http";
 
 export interface ApiOptions {
   readonly host: string;
@@ -10,6 +10,7 @@ export interface ApiOptions {
   readonly supervisor: "mock" | "claude";
   readonly storeDir: string;
   readonly apiKey?: string;
+  readonly allowTools?: ReadonlyArray<string> | "all";
 }
 
 export interface ApiHandle {
@@ -17,12 +18,26 @@ export interface ApiHandle {
   stop(): Promise<void>;
 }
 
-function selectFactory(choice: "mock" | "claude"): SupervisorFactory {
+function selectFactory(
+  choice: "mock" | "claude",
+  allowTools?: ReadonlyArray<string> | "all",
+): SupervisorFactory {
   if (choice === "claude") {
+    if (allowTools === undefined) {
+      return claudeCodeSupervisorFactory({
+        channels: "dev-flag",
+        cleanSession: true,
+        rawModel: true,
+      });
+    }
     return claudeCodeSupervisorFactory({
       channels: "dev-flag",
       cleanSession: true,
-      rawModel: true,
+      rawModel: false,
+      enablePermissionRelay: true,
+      // 'all' has no enumerable pre-approval; every prompt relays and the
+      // policy answers allow.
+      allowedBuiltinTools: allowTools === "all" ? [] : allowTools,
     });
   }
   return mockSupervisorFactory();
@@ -31,11 +46,16 @@ function selectFactory(choice: "mock" | "claude"): SupervisorFactory {
 export async function runApi(options: ApiOptions): Promise<ApiHandle> {
   const bridge = new Bridge({
     storeDir: options.storeDir,
-    supervisorFactory: selectFactory(options.supervisor),
+    supervisorFactory: selectFactory(options.supervisor, options.allowTools),
     // Clean cold boots of a real claude can take tens of seconds.
     startTimeoutMs: 90_000,
   });
-  const pool = new SessionPool({ bridge, size: options.poolSize });
+  const pool = new SessionPool({
+    bridge,
+    size: options.poolSize,
+    permissionPolicy:
+      options.allowTools !== undefined ? createAllowlistPolicy(options.allowTools) : undefined,
+  });
   await pool.start();
   let server: Awaited<ReturnType<typeof startApiServer>>;
   try {
