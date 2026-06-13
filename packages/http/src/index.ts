@@ -2,6 +2,7 @@ export * from "./anthropic-response.ts";
 export * from "./anthropic-route.ts";
 export * from "./anthropic-types.ts";
 export * from "./openai-types.ts";
+export * from "./permission-policy.ts";
 export * from "./pool.ts";
 export * from "./renderer.ts";
 export * from "./response.ts";
