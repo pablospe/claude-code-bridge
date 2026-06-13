@@ -114,6 +114,40 @@ export class MockSupervisor implements Supervisor {
     emitCrashEvents(ctx);
   }
 
+  #respondCalls: Array<{ sessionId: string; requestId: string; behavior: "allow" | "deny" }> = [];
+
+  /** Recorded respond() invocations. Test seam for permission-relay tests. */
+  get respondCalls(): ReadonlyArray<{
+    sessionId: string;
+    requestId: string;
+    behavior: "allow" | "deny";
+  }> {
+    return [...this.#respondCalls];
+  }
+
+  async respond(sessionId: string, requestId: string, behavior: "allow" | "deny"): Promise<void> {
+    this.#respondCalls.push({ sessionId, requestId, behavior });
+  }
+
+  /** Test seam: emit a permission.requested as if claude relayed a prompt. */
+  triggerPermissionRequest(
+    requestId: string,
+    toolName: string,
+    description = "d",
+    inputPreview = "{}",
+  ): void {
+    const ctx = this.#ctx;
+    if (!ctx) throw new Error("supervisor not started");
+    ctx.emit({
+      type: "permission.requested",
+      sessionId: ctx.sessionId,
+      requestId,
+      toolName,
+      description,
+      inputPreview,
+    });
+  }
+
   async close(_sessionId: string): Promise<void> {
     await this.#teardown();
   }
