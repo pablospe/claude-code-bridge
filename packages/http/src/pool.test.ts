@@ -2,7 +2,16 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import { MockSupervisor } from "@ccb/claude-code";
 import { Bridge } from "@ccb/core";
+import { createAllowlistPolicy } from "./permission-policy.ts";
 import { SessionPool } from "./pool.ts";
+
+async function until(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("until: timed out");
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
 
 const storeDir = `/tmp/ccb-pool-test-${crypto.randomUUID()}`;
 afterEach(async () => {
@@ -237,5 +246,64 @@ describe("SessionPool", () => {
     // The release path must close the session itself: close() already
     // drained #idle, so parking it there would leak it.
     expect(closed).toContain(heldId);
+  });
+
+  test("pool answers permission.requested via the policy", async () => {
+    const supervisors: MockSupervisor[] = [];
+    const bridge = makeBridge(supervisors);
+    const pool = new SessionPool({
+      bridge,
+      size: 1,
+      permissionPolicy: createAllowlistPolicy(["Read"]),
+    });
+    await pool.start();
+    const sup = supervisors[0];
+    if (!sup) throw new Error("no supervisor");
+    sup.triggerPermissionRequest("abcde", "Read");
+    sup.triggerPermissionRequest("fghij", "Bash");
+    await until(() => sup.respondCalls.length === 2);
+    expect(sup.respondCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ requestId: "abcde", behavior: "allow" }),
+        expect.objectContaining({ requestId: "fghij", behavior: "deny" }),
+      ]),
+    );
+    await pool.close();
+  });
+
+  test("a respawned session is watched too", async () => {
+    const supervisors: MockSupervisor[] = [];
+    const bridge = makeBridge(supervisors);
+    const pool = new SessionPool({
+      bridge,
+      size: 1,
+      permissionPolicy: createAllowlistPolicy("all"),
+    });
+    await pool.start();
+    await pool
+      .withSession(async () => {
+        throw new Error("boom");
+      })
+      .catch(() => {});
+    await until(() => supervisors.length === 2);
+    const fresh = supervisors[1];
+    if (!fresh) throw new Error("no respawned supervisor");
+    fresh.triggerPermissionRequest("abcde", "Bash");
+    await until(() => fresh.respondCalls.length === 1);
+    expect(fresh.respondCalls[0]).toMatchObject({ requestId: "abcde", behavior: "allow" });
+    await pool.close();
+  });
+
+  test("pool without a policy ignores permission events", async () => {
+    const supervisors: MockSupervisor[] = [];
+    const bridge = makeBridge(supervisors);
+    const pool = new SessionPool({ bridge, size: 1 });
+    await pool.start();
+    const sup = supervisors[0];
+    if (!sup) throw new Error("no supervisor");
+    sup.triggerPermissionRequest("abcde", "Bash");
+    await new Promise((r) => setTimeout(r, 100));
+    expect(sup.respondCalls).toEqual([]);
+    await pool.close();
   });
 });
