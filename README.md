@@ -169,6 +169,26 @@ and `max_tokens` are accepted but ignored, and `usage` is estimated — see the
 [design doc](./docs/2026-06-10-openai-facade-design.md) for the honest
 limitations and [`docs/SMOKE.md`](./docs/SMOKE.md) for the verified smokes.
 
+### Letting claude act: `--allow-tools`
+
+By default sessions are raw-model: claude answers, it never acts. Pass
+`--allow-tools <list>` to enable claude's own built-in tools and pre-approve a
+comma-separated allowlist — every other tool that would prompt is auto-denied
+and the turn degrades to text instead of erroring:
+
+```bash
+ccb api --allow-tools Read,Bash   # Read + Bash pre-approved; Write/Edit/... denied
+ccb api --allow-tools all         # pre-approve everything that prompts
+```
+
+**This grants API callers real access to the machine.** Tool-enabled sessions
+act on the directory where `ccb api` was started, so `--allow-tools Write,Edit,Bash`
+lets any client read, write, and run commands there. Pair it with `--api-key`
+to gate access, and only enable the tools you actually need. With no flag the
+default stays raw-model (claude answers, never acts). See
+[`docs/M5.md`](./docs/M5.md) for how allow/deny decisions are relayed and
+[`docs/SMOKE.md`](./docs/SMOKE.md) (Smoke 7) for the verified round trip.
+
 ## Did it install? (no claude needed)
 
 A mock supervisor runs the whole event pipeline in-process, with no real
