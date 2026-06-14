@@ -345,6 +345,95 @@ test("permission_request notification invokes onPermissionRequest with camelCase
   await handle.server.close();
 });
 
+test("a throwing onPermissionRequest does not crash the server", async () => {
+  let calls = 0;
+  const handle = createChannelServer({
+    sessionId: "s-throw",
+    enablePermissionRelay: true,
+    onPermissionRequest: () => {
+      calls++;
+      throw new Error("relay boom");
+    },
+  });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  const peer = new Client({ name: "test-client", version: "0.0.0" });
+  await Promise.all([handle.server.connect(serverTransport), peer.connect(clientTransport)]);
+
+  // Send a valid permission_request whose handler throws — must be swallowed.
+  await peer.notification({
+    method: "notifications/claude/channel/permission_request",
+    params: {
+      request_id: "r1",
+      tool_name: "Bash",
+      description: "run ls",
+      input_preview: "{}",
+    },
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  expect(calls).toBe(1);
+
+  // The server is still alive and processes a subsequent valid notification.
+  await peer.notification({
+    method: "notifications/claude/channel/permission_request",
+    params: {
+      request_id: "r2",
+      tool_name: "Read",
+      description: "read file",
+      input_preview: "{}",
+    },
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  expect(calls).toBe(2);
+
+  // respondPermission still functions after the throws.
+  await handle.respondPermission("r1", "deny");
+
+  await peer.close();
+  await handle.server.close();
+});
+
+test("a malformed permission_request is dropped without invoking onPermissionRequest", async () => {
+  let calls = 0;
+  const handle = createChannelServer({
+    sessionId: "s-malformed",
+    enablePermissionRelay: true,
+    onPermissionRequest: () => {
+      calls++;
+    },
+  });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  const peer = new Client({ name: "test-client", version: "0.0.0" });
+  await Promise.all([handle.server.connect(serverTransport), peer.connect(clientTransport)]);
+
+  // Missing tool_name — should be dropped, not forwarded, and no throw escapes.
+  await peer.notification({
+    method: "notifications/claude/channel/permission_request",
+    params: {
+      request_id: "bad",
+      description: "run ls",
+      input_preview: "{}",
+    },
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  expect(calls).toBe(0);
+
+  // A subsequent well-formed request still gets through.
+  await peer.notification({
+    method: "notifications/claude/channel/permission_request",
+    params: {
+      request_id: "ok",
+      tool_name: "Bash",
+      description: "run ls",
+      input_preview: "{}",
+    },
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  expect(calls).toBe(1);
+
+  await peer.close();
+  await handle.server.close();
+});
+
 test("respondPermission emits the verdict notification", async () => {
   const handle = createChannelServer({ sessionId: "s-rv", enablePermissionRelay: true });
   const seen: Array<Record<string, unknown>> = [];

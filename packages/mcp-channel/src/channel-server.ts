@@ -63,6 +63,7 @@ export interface CreateChannelServerOptions {
    * answer through the channel can approve tool use in the session.
    */
   readonly enablePermissionRelay?: boolean;
+  /** Invoked when claude relays a tool-permission prompt; forward the verdict via the handle's respondPermission(). */
   readonly onPermissionRequest?: (req: PermissionRequest) => void | Promise<void>;
 }
 
@@ -221,13 +222,24 @@ export function createChannelServer(options: CreateChannelServerOptions): Channe
     });
     server.setNotificationHandler(dispatchSchema, async (n) => {
       const parsed = PermissionRequestParamsSchema.safeParse(n.params);
-      if (!parsed.success) return;
-      await onPermissionRequest?.({
-        requestId: parsed.data.request_id,
-        toolName: parsed.data.tool_name,
-        description: parsed.data.description,
-        inputPreview: parsed.data.input_preview,
-      });
+      if (!parsed.success) {
+        console.error(
+          `channel-server: dropping malformed permission_request: ${parsed.error.message}`,
+        );
+        return;
+      }
+      try {
+        await onPermissionRequest?.({
+          requestId: parsed.data.request_id,
+          toolName: parsed.data.tool_name,
+          description: parsed.data.description,
+          inputPreview: parsed.data.input_preview,
+        });
+      } catch (err) {
+        console.error(
+          `channel-server: onPermissionRequest threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     });
   }
 
