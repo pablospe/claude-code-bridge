@@ -139,6 +139,14 @@ export function parseAllowTools(value: string): string[] | "all" {
   if (items.length === 0 || items.some((s) => s.length === 0)) {
     throw new InvalidArgumentError("expected comma-separated tool names or 'all'");
   }
+  // A token with internal whitespace would be joined into the space-delimited
+  // --allowed-tools value and silently grant MORE pre-approved tools than the
+  // operator listed, so reject anything that is not a strict tool-name token.
+  if (items.some((s) => !/^[A-Za-z0-9_-]+$/.test(s))) {
+    throw new InvalidArgumentError(
+      "expected comma-separated tool names (letters, digits, _ or -) or 'all'",
+    );
+  }
   return items;
 }
 

@@ -19,3 +19,9 @@ test("matching is exact and case-sensitive", () => {
   const p = createAllowlistPolicy(["Read"]);
   expect(p.decide("read")).toBe("deny");
 });
+
+test("rejects structurally-invalid tool names", () => {
+  expect(() => createAllowlistPolicy(["Read Bash"])).toThrow(TypeError);
+  expect(() => createAllowlistPolicy(["Read"])).not.toThrow();
+  expect(() => createAllowlistPolicy("all")).not.toThrow();
+});

@@ -257,9 +257,23 @@ test("ccb api rejects empty --allow-tools entries", async () => {
   expect(stderr).toMatch(/comma-separated tool names/);
 });
 
+test("ccb api rejects --allow-tools tokens with internal whitespace", async () => {
+  const { exitCode, stderr } = await runCli([
+    "api",
+    "--allow-tools",
+    "Read Bash",
+    "--supervisor",
+    "mock",
+  ]);
+  expect(exitCode).not.toBe(0);
+  expect(stderr).toMatch(/letters, digits/);
+});
+
 test("parseAllowTools parses names and the all sentinel", () => {
   expect(parseAllowTools("Read, Grep")).toEqual(["Read", "Grep"]);
   expect(parseAllowTools("all")).toBe("all");
+  expect(parseAllowTools("Read,Bash")).toEqual(["Read", "Bash"]);
+  expect(() => parseAllowTools("Read Bash")).toThrow(/letters, digits/);
 });
 
 test("selectSupervisorFactory('mock') returns a MockSupervisor", () => {
