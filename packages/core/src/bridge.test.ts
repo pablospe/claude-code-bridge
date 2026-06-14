@@ -1124,6 +1124,88 @@ test("open requests are flushed as aborted on close, timers cleared", async () =
   }
 });
 
+test("close resolves every open request exactly once (no dangling requested)", async () => {
+  // Invariant guard for the abort flush: after close, the number of terminating
+  // permission.resolved events equals the number of permission.requested, and
+  // each id resolves exactly once. The age-out-during-close fix (timer no-ops
+  // while state !== "open") preserves this even if a pending timer fires during
+  // teardown, since it leaves its entry for this flush instead of deleting it
+  // and dropping the resolved via the closing-state early-return.
+  const b = new Bridge({
+    storeDir: dir,
+    supervisorFactory: () => supervisor,
+    permissionTimeoutMs: 100,
+  });
+  const handle = await b.startSession({});
+  pushPermissionRequest(supervisor, handle.id, "abcde");
+  pushPermissionRequest(supervisor, handle.id, "fghij");
+
+  await b.close(handle.id);
+  // Give any (no-opped) age-out timer a chance to have fired after close.
+  await new Promise((r) => setTimeout(r, 150));
+
+  const stored = await b.readStoredEvents(handle.id);
+  const requested = stored.filter((e) => e.type === "permission.requested");
+  const resolved = stored.filter((e) => e.type === "permission.resolved");
+  // Exactly one terminating resolved per requested; no dangling requests and no
+  // spurious extra resolved from a leaked timer firing post-close.
+  expect(resolved).toHaveLength(requested.length);
+  for (const req of requested) {
+    if (req.type !== "permission.requested") continue;
+    const matches = stored.filter(
+      (e) => e.type === "permission.resolved" && e.requestId === req.requestId,
+    );
+    expect(matches).toHaveLength(1);
+  }
+});
+
+test("a duplicate requestId clears the stale timer so it cannot resolve a later request", async () => {
+  const b = new Bridge({
+    storeDir: dir,
+    supervisorFactory: () => supervisor,
+    permissionTimeoutMs: 40,
+  });
+  const handle = await b.startSession({});
+
+  // First request opens timer1 (fires ~t=40). A duplicate with the SAME id
+  // arrives before timer1 fires: without clearing it, timer1 is orphaned (the
+  // map now points at timer2) and will still fire ~t=40.
+  pushPermissionRequest(supervisor, handle.id, "abcde");
+  pushPermissionRequest(supervisor, handle.id, "abcde");
+
+  // Answer the current entry (clears timer2, deletes the entry).
+  await b.respond(handle.id, "abcde", "allow");
+
+  // Delay, then open a FRESH request reusing the same id (timer3, fires ~t=65).
+  await new Promise((r) => setTimeout(r, 25));
+  pushPermissionRequest(supervisor, handle.id, "abcde");
+
+  // Wait until ~t=50: the orphaned timer1 has fired (t=40) but timer3 has not
+  // legitimately aged out yet (t=65). Pre-fix, timer1 finds the live third
+  // entry and wrongly resolves it as unanswered-remotely.
+  await new Promise((r) => setTimeout(r, 25));
+
+  const stored = await b.readStoredEvents(handle.id);
+  // Pre-fix: orphaned timer1 fires, finds the live entry, and wrongly resolves
+  // the still-open third request as unanswered-remotely. Post-fix: timer1 was
+  // cleared at the duplicate, so the only resolved so far is the explicit allow.
+  const resolved = stored.filter(
+    (e) => e.type === "permission.resolved" && e.requestId === "abcde",
+  );
+  expect(resolved).toHaveLength(1);
+  expect(resolved[0]?.type === "permission.resolved" && resolved[0].outcome).toBe("allow");
+  expect(
+    stored.some(
+      (e) =>
+        e.type === "permission.resolved" &&
+        e.requestId === "abcde" &&
+        e.outcome === "unanswered-remotely",
+    ),
+  ).toBe(false);
+
+  await b.close(handle.id);
+});
+
 test("supervisor-initiated session end aborts open requests", async () => {
   const handle = await bridge.startSession({});
   pushPermissionRequest(supervisor, handle.id, "abcde");

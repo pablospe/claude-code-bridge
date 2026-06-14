@@ -87,7 +87,7 @@ interface Session {
   /** Once an agent.done store-error notice has fired, do not repeat it. */
   storeErrorNotified: boolean;
   /** Open permission requests awaiting a remote answer, keyed by requestId. */
-  readonly openPermissions: Map<string, { toolName: string; timer: ReturnType<typeof setTimeout> }>;
+  readonly openPermissions: Map<string, { timer: ReturnType<typeof setTimeout> }>;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -444,6 +444,12 @@ export class Bridge implements ClaudeCodeBridge {
     if (event.type === "permission.requested") {
       const requestId = event.requestId;
       const timer = setTimeout(() => {
+        // No-op once the session leaves "open": during teardown #runClose owns
+        // the abort flush. If we deleted the entry here, #emitFromSupervisor's
+        // closing/closed early-return would drop the permission.resolved and
+        // leave the permission.requested dangling. Leave the entry for the
+        // #runClose abort flush (which clearTimeouts this now-fired timer).
+        if (session.state !== "open") return;
         if (!session.openPermissions.has(requestId)) return;
         session.openPermissions.delete(requestId);
         // Recommendation (A): stop tracking, send NO verdict. The bridge does
@@ -457,7 +463,12 @@ export class Bridge implements ClaudeCodeBridge {
         });
       }, this.#permissionTimeoutMs);
       timer.unref?.();
-      session.openPermissions.set(requestId, { toolName: event.toolName, timer });
+      // A duplicate requestId would overwrite the map entry and orphan the old
+      // timer, which could later fire and wrongly resolve the newer request.
+      // Clear the stale timer before replacing it.
+      const existing = session.openPermissions.get(requestId);
+      if (existing) clearTimeout(existing.timer);
+      session.openPermissions.set(requestId, { timer });
     }
     if (isTerminalEnd) {
       // The supervisor signalled end-of-session. State is already "closing"
