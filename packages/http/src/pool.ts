@@ -101,7 +101,7 @@ export class SessionPool {
           await this.#bridge.respond(sessionId, event.requestId, policy.decide(event.toolName));
         } catch (err) {
           console.error(
-            `ccb api: permission respond failed for ${event.requestId}: ${
+            `SessionPool: permission respond failed for ${event.requestId}: ${
               err instanceof Error ? err.message : String(err)
             }`,
           );

@@ -18,6 +18,7 @@ Assumes the server was started WITHOUT --api-key (the "ccb" placeholder is
 ignored then). Prompts are kept robust to phrasing; assertions check
 substrings / finish_reason, not exact text.
 """
+import os
 import sys
 
 try:
@@ -27,6 +28,7 @@ except ImportError:
     sys.exit(1)
 
 BASE = "http://127.0.0.1:18485/v1"
+DENIED_TARGET = "ccb-smoke-should-not-exist.txt"
 
 
 def main() -> int:
@@ -48,22 +50,29 @@ def main() -> int:
     content = allowed.choices[0].message.content or ""
     finish = allowed.choices[0].finish_reason
     print(f"  finish_reason={finish} reply={content[:200]!r}")
+    # A real Read-tool turn ends with a normal stop; a hallucinated answer that
+    # never invoked the tool is less likely to also produce finish_reason=stop.
+    if finish != "stop":
+        print(f"FAIL: allowed tool turn should finish with stop, got {finish!r}")
+        return 1
     low = content.lower()
     if "bridge" not in low and "claude-code-bridge" not in low:
         print("FAIL: expected repo-identifying content (bridge) in the reply")
         return 1
 
-    # 2. DENIED tool (Write/Edit): ask to create a file; expect graceful text.
+    # 2. DENIED tool (Write/Edit): ask to create a file; expect graceful text
+    # AND that the file was never actually written (the policy denied it).
     print("[2/2] denied tool (Write a file)...")
+    if os.path.exists(DENIED_TARGET):
+        os.remove(DENIED_TARGET)
     denied = client.chat.completions.create(
         model="ccb-claude",
         messages=[{
             "role": "user",
             "content": (
-                "Use your Write tool to create a file named "
-                "ccb-smoke-should-not-exist.txt with the text 'hello'. "
-                "If you are not permitted to write files, just reply with the "
-                "single word DENIED instead."
+                f"Use your Write tool to create a file named {DENIED_TARGET} "
+                "with the text 'hello'. If you are not permitted to write "
+                "files, just reply with the single word DENIED instead."
             ),
         }],
     )
@@ -73,6 +82,14 @@ def main() -> int:
     if dfinish not in ("stop", "length"):
         print(f"FAIL: denied tool should degrade to text, got finish_reason={dfinish!r}")
         return 1
+    # The hard signal: the denied Write must NOT have created the file.
+    if os.path.exists(DENIED_TARGET):
+        print(f"FAIL: denied Write tool actually created {DENIED_TARGET}")
+        os.remove(DENIED_TARGET)
+        return 1
+    # Best-effort: phrasing varies, so a denial word is a soft signal only.
+    if "deni" not in dcontent.lower() and "not permitted" not in dcontent.lower():
+        print("  note: reply carried no explicit denial word (phrasing varies)")
 
     print("SMOKE OK")
     return 0
