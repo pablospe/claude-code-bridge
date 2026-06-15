@@ -178,7 +178,7 @@ and the turn degrades to text instead of erroring:
 
 ```bash
 ccb api --allow-tools Read,Bash   # Read + Bash pre-approved; Write/Edit/... denied
-ccb api --allow-tools all         # pre-approve everything that prompts
+ccb api --allow-tools all         # auto-approve every permission prompt via the relay
 ```
 
 **This grants API callers real access to the machine.** Tool-enabled sessions

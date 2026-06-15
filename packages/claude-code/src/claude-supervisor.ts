@@ -284,6 +284,14 @@ export class ClaudeCodeSupervisor implements Supervisor {
     this.#rawModel = options.rawModel ?? false;
     this.#enablePermissionRelay = options.enablePermissionRelay ?? false;
     this.#allowedBuiltinTools = options.allowedBuiltinTools ?? [];
+    for (const name of this.#allowedBuiltinTools) {
+      if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+        throw new Error(
+          `allowedBuiltinTools entries must match /^[A-Za-z0-9_-]+$/ (got ${JSON.stringify(name)}) — ` +
+            "internal whitespace would broaden the space-delimited --allowed-tools value",
+        );
+      }
+    }
     if (this.#cleanSession && this.#channels === "plugin") {
       throw new Error("cleanSession requires dev-flag channels");
     }

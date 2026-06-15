@@ -1104,6 +1104,26 @@ test("cleanSession with plugin channels throws at construction", () => {
   ).toThrow("cleanSession requires dev-flag channels");
 });
 
+test("allowedBuiltinTools rejects tokens with internal whitespace at construction", () => {
+  expect(
+    () =>
+      new ClaudeCodeSupervisor({
+        allowedBuiltinTools: ["Read Bash"],
+        launcherFactory: captureLauncherFactory(),
+      }),
+  ).toThrow(/allowedBuiltinTools entries must match/);
+});
+
+test("allowedBuiltinTools rejects empty token at construction", () => {
+  expect(
+    () =>
+      new ClaudeCodeSupervisor({
+        allowedBuiltinTools: ["Read", ""],
+        launcherFactory: captureLauncherFactory(),
+      }),
+  ).toThrow(/allowedBuiltinTools entries must match/);
+});
+
 test("cooperative close: does NOT synthesize crash events", async () => {
   const { supervisor, ctx, emitted, helloClient } = await startWithFakeLauncher({});
   // Sanity: no crash events emitted at start.
