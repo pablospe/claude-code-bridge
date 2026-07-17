@@ -11,6 +11,10 @@ dist/
 .ccb-data/
 *.log
 
+# python smoke-script bytecode
+__pycache__/
+*.pyc
+
 # local demo recordings (published to asciinema; not shipped in the repo)
 demo*.gif
 demo*.mp4

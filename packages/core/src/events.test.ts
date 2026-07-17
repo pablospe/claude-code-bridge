@@ -19,6 +19,10 @@ function describeEvent(event: BridgeEvent): string {
       return `tool:${event.sessionId}`;
     case "session.ended":
       return `ended:${event.sessionId}:${event.reason ?? ""}`;
+    case "permission.requested":
+      return `permission.requested:${event.sessionId}:${event.requestId}:${event.toolName}`;
+    case "permission.resolved":
+      return `permission.resolved:${event.sessionId}:${event.requestId}:${event.outcome}`;
     default: {
       const exhaustive: never = event;
       throw new Error(`unhandled ${String(exhaustive)}`);

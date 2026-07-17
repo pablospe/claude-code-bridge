@@ -34,3 +34,17 @@ test("POST /v1/chat/completions round-trips a turn through the bridge", async ()
     await api.stop();
   }
 });
+
+test("runApi with allowTools boots and stops", async () => {
+  const api = await runApi({
+    host: "127.0.0.1",
+    port: 0,
+    poolSize: 1,
+    turnTimeoutMs: 5_000,
+    supervisor: "mock",
+    storeDir: `/tmp/ccb-api-test-${crypto.randomUUID()}`,
+    allowTools: ["Read"],
+  });
+  expect(api.url).toContain("http://127.0.0.1:");
+  await api.stop();
+});

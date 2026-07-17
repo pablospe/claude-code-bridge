@@ -105,6 +105,17 @@ export interface ClaudeCodeSupervisorOptions {
    * the bridge tools — it behaves like a bare model rather than an agent.
    */
   readonly rawModel?: boolean;
+  /**
+   * Declare the permission relay capability to the channel server (via the
+   * generated mcp.json env flag) and surface `permission.requested` events as
+   * the channel reports tool-permission prompts. Off by default.
+   */
+  readonly enablePermissionRelay?: boolean;
+  /**
+   * Extra built-in tool names appended to `--allowed-tools` so they run
+   * without prompting (in addition to the bridge tools). Empty by default.
+   */
+  readonly allowedBuiltinTools?: ReadonlyArray<string>;
 }
 
 /**
@@ -245,6 +256,8 @@ export class ClaudeCodeSupervisor implements Supervisor {
   readonly #hooks: { readonly events: ReadonlyArray<HookEvent> } | undefined;
   readonly #cleanSession: boolean;
   readonly #rawModel: boolean;
+  readonly #enablePermissionRelay: boolean;
+  readonly #allowedBuiltinTools: ReadonlyArray<string>;
 
   #ctx: SupervisorContext | undefined;
   #server: ControlServer | undefined;
@@ -269,6 +282,16 @@ export class ClaudeCodeSupervisor implements Supervisor {
     this.#hooks = options.hooks;
     this.#cleanSession = options.cleanSession ?? false;
     this.#rawModel = options.rawModel ?? false;
+    this.#enablePermissionRelay = options.enablePermissionRelay ?? false;
+    this.#allowedBuiltinTools = options.allowedBuiltinTools ?? [];
+    for (const name of this.#allowedBuiltinTools) {
+      if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+        throw new Error(
+          `allowedBuiltinTools entries must match /^[A-Za-z0-9_-]+$/ (got ${JSON.stringify(name)}) — ` +
+            "internal whitespace would broaden the space-delimited --allowed-tools value",
+        );
+      }
+    }
     if (this.#cleanSession && this.#channels === "plugin") {
       throw new Error("cleanSession requires dev-flag channels");
     }
@@ -320,6 +343,19 @@ export class ClaudeCodeSupervisor implements Supervisor {
       if (sid !== sessionId) return;
       this.#hookFanin?.onHello();
     });
+    server.on("permission-request", (sid, requestId, toolName, description, inputPreview) => {
+      if (sid !== sessionId) return;
+      const current = this.#ctx;
+      if (!current) return;
+      current.emit({
+        type: "permission.requested",
+        sessionId: sid,
+        requestId,
+        toolName,
+        description,
+        inputPreview,
+      });
+    });
     // Channel-server peer dropped its TCP control connection (crash, kill -9).
     // Synthesize the crash event pair so the bridge transitions the session
     // out of "open" and live consumers see the disconnect. ControlServer
@@ -360,6 +396,7 @@ export class ClaudeCodeSupervisor implements Supervisor {
         endpoint: endpoint.endpoint,
         command: channelRuntimeCommand,
         args: [channelBin],
+        enablePermissionRelay: this.#enablePermissionRelay,
       });
       await this.#writeFile(mcpConfigPath, JSON.stringify(config, null, 2), "utf8");
 
@@ -433,6 +470,15 @@ export class ClaudeCodeSupervisor implements Supervisor {
       throw new Error(`unknown session: ${sessionId}`);
     }
     await server.deliver(sessionId, content, { messageId });
+  }
+
+  async respond(sessionId: string, requestId: string, behavior: "allow" | "deny"): Promise<void> {
+    const server = this.#server;
+    if (!server) throw new Error("supervisor not started");
+    if (sessionId !== this.#ctx?.sessionId) {
+      throw new Error(`unknown session: ${sessionId}`);
+    }
+    await server.respond(sessionId, requestId, behavior);
   }
 
   async interrupt(_sessionId: string): Promise<void> {
@@ -543,7 +589,8 @@ export class ClaudeCodeSupervisor implements Supervisor {
     if (this.#settingsPath !== undefined) {
       args.push("--settings", this.#settingsPath);
     }
-    args.push("--allowed-tools", ALLOWED_TOOLS);
+    const allowedTools = [ALLOWED_TOOLS, ...this.#allowedBuiltinTools].join(" ");
+    args.push("--allowed-tools", allowedTools);
     if (this.#rawModel) {
       args.push("--disallowed-tools", DISALLOWED_BUILTIN_TOOLS);
     }

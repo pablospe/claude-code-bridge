@@ -18,6 +18,12 @@ export interface Supervisor {
    * against this.
    */
   clear?(sessionId: string): Promise<void>;
+  /**
+   * Answer an open permission request. Optional: only channels-capable
+   * supervisors with the permission relay enabled implement it. Bridge.respond
+   * rejects with "supervisor does not support respond" when undefined.
+   */
+  respond?(sessionId: string, requestId: string, behavior: "allow" | "deny"): Promise<void>;
   close(sessionId: string): Promise<void>;
 }
 

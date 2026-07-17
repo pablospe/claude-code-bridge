@@ -56,10 +56,18 @@ export interface BridgeOptions {
    * only; subsequent supervisor calls are not affected. Defaults to 30000ms.
    */
   startTimeoutMs?: number;
+  /**
+   * Upper bound for awaiting a remote answer to a permission.requested.
+   * Recommendation (A): on expiry the bridge stops tracking and sends NO
+   * verdict — the terminal may still answer; the consumer learns the truth from
+   * the subsequent tool.event. Defaults to 120000ms.
+   */
+  permissionTimeoutMs?: number;
 }
 
 const DEFAULT_CLOSE_TIMEOUT_MS = 5_000;
 const DEFAULT_START_TIMEOUT_MS = 30_000;
+const DEFAULT_PERMISSION_TIMEOUT_MS = 120_000;
 const STORE_ERROR_THRESHOLD = 3;
 
 type SessionState = "starting" | "open" | "closing" | "closed";
@@ -78,6 +86,8 @@ interface Session {
   storeErrorCount: number;
   /** Once an agent.done store-error notice has fired, do not repeat it. */
   storeErrorNotified: boolean;
+  /** Open permission requests awaiting a remote answer, keyed by requestId. */
+  readonly openPermissions: Map<string, { timer: ReturnType<typeof setTimeout> }>;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -100,6 +110,7 @@ export class Bridge implements ClaudeCodeBridge {
   readonly #storeFactory: StoreFactory;
   readonly #closeTimeoutMs: number;
   readonly #startTimeoutMs: number;
+  readonly #permissionTimeoutMs: number;
 
   constructor(options: BridgeOptions) {
     this.#storeDir = options.storeDir;
@@ -107,12 +118,14 @@ export class Bridge implements ClaudeCodeBridge {
     this.#storeFactory = options.storeFactory ?? ((_id, path) => new JsonlEventStore(path));
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
     this.#startTimeoutMs = options.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS;
+    this.#permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
     // Timeouts must be positive integers. A value of 0 fires the timer before
     // supervisor.start reaches its first await, letting it leak half-built
     // resources; fractional values quietly round inside setTimeout. Reject
     // both at the constructor boundary rather than silently coercing.
     assertPositiveInteger(this.#startTimeoutMs, "startTimeoutMs");
     assertPositiveInteger(this.#closeTimeoutMs, "closeTimeoutMs");
+    assertPositiveInteger(this.#permissionTimeoutMs, "permissionTimeoutMs");
   }
 
   async startSession(_options: StartSessionOptions): Promise<SessionHandle> {
@@ -131,6 +144,7 @@ export class Bridge implements ClaudeCodeBridge {
       pending: new Set(),
       storeErrorCount: 0,
       storeErrorNotified: false,
+      openPermissions: new Map(),
     };
     this.#sessions.set(id, session);
 
@@ -225,6 +239,45 @@ export class Bridge implements ClaudeCodeBridge {
     await session.supervisor.clear(sessionId);
   }
 
+  async respond(
+    sessionId: string,
+    requestId: string,
+    behavior: "allow" | "deny",
+    options?: { approver?: { userId: string; displayName?: string } },
+  ): Promise<void> {
+    const session = this.#requireSession(sessionId);
+    if (session.state !== "open") {
+      throw new Error(`session is closing: ${sessionId}`);
+    }
+    if (session.supervisor.respond === undefined) {
+      throw new Error("supervisor does not support respond");
+    }
+    const entry = session.openPermissions.get(requestId);
+    if (entry === undefined) {
+      throw new Error(`no open permission request: ${requestId}`);
+    }
+    // Exactly-once: clear synchronously before any await so a concurrent
+    // respond or a timer firing in the same tick finds no entry.
+    clearTimeout(entry.timer);
+    session.openPermissions.delete(requestId);
+    // Persist-before-send: durable record first; a store failure here means no
+    // verdict crosses the wire. No retry on a wire failure after the persist —
+    // notifications are fire-and-forget and a retry could double-apply.
+    // Note: the entry is already removed above, so if this append rejects the
+    // persisted JSONL keeps the permission.requested with no terminating
+    // resolved (a live subscriber still saw the bus emit). That dangling-log
+    // residue is the accepted cost of exactly-once + the "store failure → real
+    // error" contract; the consumer learns via the rejected promise.
+    await this.#emitAwaited(session, {
+      type: "permission.resolved",
+      sessionId,
+      requestId,
+      outcome: behavior,
+      ...(options?.approver !== undefined ? { approver: options.approver } : {}),
+    });
+    await session.supervisor.respond(sessionId, requestId, behavior);
+  }
+
   async close(sessionId: string): Promise<void> {
     const session = this.#sessions.get(sessionId);
     if (!session) return;
@@ -247,6 +300,26 @@ export class Bridge implements ClaudeCodeBridge {
     const sessionId = session.id;
     let inner: unknown;
     try {
+      // Abort flush: every open permission request resolves in the log so a
+      // permission.requested is never left dangling. delete-as-you-go makes
+      // this idempotent even if #runClose's body somehow ran twice (it cannot
+      // — close() and the terminal-end path both assign closingPromise before
+      // invoking it — but the loop is self-draining regardless).
+      for (const [requestId, entry] of session.openPermissions) {
+        clearTimeout(entry.timer);
+        session.openPermissions.delete(requestId);
+        try {
+          await this.#emitAwaited(session, {
+            type: "permission.resolved",
+            sessionId,
+            requestId,
+            outcome: "aborted",
+          });
+        } catch {
+          // A failing store must not block close; the close ladder handles
+          // store teardown regardless.
+        }
+      }
       // Persist session.ended and tear down the supervisor independently:
       // a persistence failure must NOT short-circuit supervisor.close(),
       // otherwise resources leak. Preserve the first error.
@@ -368,6 +441,35 @@ export class Bridge implements ClaudeCodeBridge {
     ).finally(() => {
       session.pending.delete(p);
     });
+    if (event.type === "permission.requested") {
+      const requestId = event.requestId;
+      const timer = setTimeout(() => {
+        // No-op once the session leaves "open": during teardown #runClose owns
+        // the abort flush. If we deleted the entry here, #emitFromSupervisor's
+        // closing/closed early-return would drop the permission.resolved and
+        // leave the permission.requested dangling. Leave the entry for the
+        // #runClose abort flush (which clearTimeouts this now-fired timer).
+        if (session.state !== "open") return;
+        if (!session.openPermissions.has(requestId)) return;
+        session.openPermissions.delete(requestId);
+        // Recommendation (A): stop tracking, send NO verdict. The bridge does
+        // not know the real outcome (the terminal may have answered); the
+        // consumer reads the subsequent tool.event.
+        this.#emitFromSupervisor(session, {
+          type: "permission.resolved",
+          sessionId: session.id,
+          requestId,
+          outcome: "unanswered-remotely",
+        });
+      }, this.#permissionTimeoutMs);
+      timer.unref?.();
+      // A duplicate requestId would overwrite the map entry and orphan the old
+      // timer, which could later fire and wrongly resolve the newer request.
+      // Clear the stale timer before replacing it.
+      const existing = session.openPermissions.get(requestId);
+      if (existing) clearTimeout(existing.timer);
+      session.openPermissions.set(requestId, { timer });
+    }
     if (isTerminalEnd) {
       // The supervisor signalled end-of-session. State is already "closing"
       // (set above); now run the teardown ladder so the bus closes (live

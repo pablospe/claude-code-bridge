@@ -288,3 +288,176 @@ test("createChannelServer advertises claude/channel and tools capabilities", asy
   await client.close();
   await server.close();
 });
+
+test("permission capability is declared only when enablePermissionRelay is set", async () => {
+  // Without enablePermissionRelay: claude/channel/permission must be absent
+  const { server: serverOff } = createChannelServer({ sessionId: "s-cap" });
+  const [serverTransportOff, clientTransportOff] = InMemoryTransport.createLinkedPair();
+  const clientOff = new Client({ name: "test-client", version: "0.0.0" });
+  await Promise.all([serverOff.connect(serverTransportOff), clientOff.connect(clientTransportOff)]);
+  const capsOff = clientOff.getServerCapabilities();
+  expect(capsOff?.experimental?.["claude/channel/permission"]).toBeUndefined();
+  await clientOff.close();
+  await serverOff.close();
+
+  // With enablePermissionRelay: claude/channel/permission must equal {}
+  const { server: serverOn } = createChannelServer({
+    sessionId: "s-cap2",
+    enablePermissionRelay: true,
+  });
+  const [serverTransportOn, clientTransportOn] = InMemoryTransport.createLinkedPair();
+  const clientOn = new Client({ name: "test-client", version: "0.0.0" });
+  await Promise.all([serverOn.connect(serverTransportOn), clientOn.connect(clientTransportOn)]);
+  const capsOn = clientOn.getServerCapabilities();
+  expect(capsOn?.experimental?.["claude/channel/permission"]).toEqual({});
+  await clientOn.close();
+  await serverOn.close();
+});
+
+test("permission_request notification invokes onPermissionRequest with camelCase fields", async () => {
+  const reqs: Array<Record<string, string>> = [];
+  const handle = createChannelServer({
+    sessionId: "s-pr",
+    enablePermissionRelay: true,
+    onPermissionRequest: (req) => {
+      reqs.push({ ...req });
+    },
+  });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  const peer = new Client({ name: "test-client", version: "0.0.0" });
+  await Promise.all([handle.server.connect(serverTransport), peer.connect(clientTransport)]);
+
+  await peer.notification({
+    method: "notifications/claude/channel/permission_request",
+    params: {
+      request_id: "abcde",
+      tool_name: "Bash",
+      description: "run ls",
+      input_preview: "{}",
+    },
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  expect(reqs).toEqual([
+    { requestId: "abcde", toolName: "Bash", description: "run ls", inputPreview: "{}" },
+  ]);
+
+  await peer.close();
+  await handle.server.close();
+});
+
+test("a throwing onPermissionRequest does not crash the server", async () => {
+  let calls = 0;
+  const handle = createChannelServer({
+    sessionId: "s-throw",
+    enablePermissionRelay: true,
+    onPermissionRequest: () => {
+      calls++;
+      throw new Error("relay boom");
+    },
+  });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  const peer = new Client({ name: "test-client", version: "0.0.0" });
+  await Promise.all([handle.server.connect(serverTransport), peer.connect(clientTransport)]);
+
+  // Send a valid permission_request whose handler throws — must be swallowed.
+  await peer.notification({
+    method: "notifications/claude/channel/permission_request",
+    params: {
+      request_id: "r1",
+      tool_name: "Bash",
+      description: "run ls",
+      input_preview: "{}",
+    },
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  expect(calls).toBe(1);
+
+  // The server is still alive and processes a subsequent valid notification.
+  await peer.notification({
+    method: "notifications/claude/channel/permission_request",
+    params: {
+      request_id: "r2",
+      tool_name: "Read",
+      description: "read file",
+      input_preview: "{}",
+    },
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  expect(calls).toBe(2);
+
+  // respondPermission still functions after the throws.
+  await handle.respondPermission("r1", "deny");
+
+  await peer.close();
+  await handle.server.close();
+});
+
+test("a malformed permission_request is dropped without invoking onPermissionRequest", async () => {
+  let calls = 0;
+  const handle = createChannelServer({
+    sessionId: "s-malformed",
+    enablePermissionRelay: true,
+    onPermissionRequest: () => {
+      calls++;
+    },
+  });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  const peer = new Client({ name: "test-client", version: "0.0.0" });
+  await Promise.all([handle.server.connect(serverTransport), peer.connect(clientTransport)]);
+
+  // Missing tool_name — should be dropped, not forwarded, and no throw escapes.
+  await peer.notification({
+    method: "notifications/claude/channel/permission_request",
+    params: {
+      request_id: "bad",
+      description: "run ls",
+      input_preview: "{}",
+    },
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  expect(calls).toBe(0);
+
+  // A subsequent well-formed request still gets through.
+  await peer.notification({
+    method: "notifications/claude/channel/permission_request",
+    params: {
+      request_id: "ok",
+      tool_name: "Bash",
+      description: "run ls",
+      input_preview: "{}",
+    },
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  expect(calls).toBe(1);
+
+  await peer.close();
+  await handle.server.close();
+});
+
+test("respondPermission emits the verdict notification", async () => {
+  const handle = createChannelServer({ sessionId: "s-rv", enablePermissionRelay: true });
+  const seen: Array<Record<string, unknown>> = [];
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+
+  const PermissionVerdictSchema = NotificationSchema.extend({
+    method: z.literal("notifications/claude/channel/permission"),
+    params: z.looseObject({
+      request_id: z.string(),
+      behavior: z.string(),
+    }),
+  });
+
+  const peer = new Client({ name: "test-client", version: "0.0.0" });
+  peer.setNotificationHandler(PermissionVerdictSchema, (n) => {
+    seen.push(n.params as Record<string, unknown>);
+  });
+
+  await Promise.all([handle.server.connect(serverTransport), peer.connect(clientTransport)]);
+
+  await handle.respondPermission("abcde", "allow");
+  await new Promise((r) => setTimeout(r, 50));
+  expect(seen).toEqual([{ request_id: "abcde", behavior: "allow" }]);
+
+  await peer.close();
+  await handle.server.close();
+});

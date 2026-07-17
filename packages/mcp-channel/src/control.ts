@@ -45,6 +45,27 @@ const HookMessageSchema = z.object({
 const CloseMessageSchema = z.object({
   type: z.literal("close"),
 });
+/**
+ * Travels client→server (like `tool`) because the permission request
+ * originates in claude: the MCP channel-server forwards it up to the bridge
+ * so the bridge can prompt the user for a decision.
+ */
+const PermissionRequestMessageSchema = z.object({
+  type: z.literal("permission_request"),
+  requestId: z.string(),
+  toolName: z.string(),
+  description: z.string(),
+  inputPreview: z.string(),
+});
+/**
+ * Travels server→client (like `deliver`) because the verdict comes from the
+ * bridge and must be forwarded down into claude's permission callback.
+ */
+const PermissionResponseMessageSchema = z.object({
+  type: z.literal("permission_response"),
+  requestId: z.string(),
+  behavior: z.enum(["allow", "deny"]),
+});
 
 const ControlMessageSchema = z.discriminatedUnion("type", [
   HelloMessageSchema,
@@ -53,6 +74,8 @@ const ControlMessageSchema = z.discriminatedUnion("type", [
   ToolMessageSchema,
   HookMessageSchema,
   CloseMessageSchema,
+  PermissionRequestMessageSchema,
+  PermissionResponseMessageSchema,
 ]);
 
 type DeliverMessage = z.infer<typeof DeliverMessageSchema>;
@@ -101,6 +124,18 @@ export interface ControlServerEvents {
    * cooperative close path driven by ControlServer.close().
    */
   "peer-close": (sessionId: string) => void;
+  /**
+   * Fires when a `permission_request` frame arrives from the channel-server
+   * (claude side). The bridge receives this and must reply with `respond()`.
+   * Travels client→server like `tool` because it originates in claude.
+   */
+  "permission-request": (
+    sessionId: string,
+    requestId: string,
+    toolName: string,
+    description: string,
+    inputPreview: string,
+  ) => void;
 }
 
 const DEFAULT_HELLO_TIMEOUT_MS = 5_000;
@@ -194,6 +229,23 @@ export class ControlServer {
       ...(meta !== undefined ? { meta } : {}),
     };
     await writeLineNormal(socket, msg, writeTimeoutMs());
+  }
+
+  /**
+   * Send a permission verdict to the channel-server for the given session.
+   * Travels server→client like `deliver` because the verdict comes from the
+   * bridge side. Mirrors `deliver`'s socket-lookup + wait pattern exactly.
+   */
+  async respond(sessionId: string, requestId: string, behavior: "allow" | "deny"): Promise<void> {
+    let socket = this.#sessionSockets.get(sessionId);
+    if (!socket) {
+      socket = await this.#waitForSessionSocket(sessionId, DEFAULT_DELIVER_WAIT_MS);
+    }
+    await writeLineNormal(
+      socket,
+      { type: "permission_response", requestId, behavior },
+      writeTimeoutMs(),
+    );
   }
 
   /**
@@ -340,6 +392,25 @@ export class ControlServer {
         }
         return;
       }
+      if (msg.type === "permission_request") {
+        if (!sessionId) {
+          socket.destroy(new Error("permission_request before hello"));
+          return;
+        }
+        try {
+          this.#emitter.emit(
+            "permission-request",
+            sessionId,
+            msg.requestId,
+            msg.toolName,
+            msg.description,
+            msg.inputPreview,
+          );
+        } catch (err) {
+          console.error(`control: permission-request listener threw: ${String(err)}`);
+        }
+        return;
+      }
       if (msg.type === "hook") {
         if (!sessionId) {
           socket.destroy(new Error("hook before hello"));
@@ -387,6 +458,12 @@ export interface ControlClientOptions {
   readonly onDeliver: (content: string, opts: DeliverWireOptions) => void | Promise<void>;
   readonly helloAckTimeoutMs?: number;
   readonly onConnectionLost?: (err?: Error) => void;
+  /**
+   * Called when a `permission_response` frame arrives from the bridge.
+   * Travels server→client like `deliver` because the verdict originates in
+   * the bridge and must be forwarded into claude's permission callback.
+   */
+  readonly onPermissionResponse?: (requestId: string, behavior: "allow" | "deny") => void;
 }
 
 const DEFAULT_HELLO_ACK_TIMEOUT_MS = 5_000;
@@ -401,6 +478,7 @@ export class ControlClient {
   readonly #onDeliver: ControlClientOptions["onDeliver"];
   readonly #helloAckTimeoutMs: number;
   readonly #onConnectionLost: ControlClientOptions["onConnectionLost"];
+  readonly #onPermissionResponse: ControlClientOptions["onPermissionResponse"];
   #socket: Socket | undefined;
   #connected = false;
   #closing = false;
@@ -412,6 +490,7 @@ export class ControlClient {
     this.#onDeliver = opts.onDeliver;
     this.#helloAckTimeoutMs = opts.helloAckTimeoutMs ?? DEFAULT_HELLO_ACK_TIMEOUT_MS;
     this.#onConnectionLost = opts.onConnectionLost;
+    this.#onPermissionResponse = opts.onPermissionResponse;
   }
 
   async connect(): Promise<void> {
@@ -447,6 +526,14 @@ export class ControlClient {
           await this.#onDeliver(msg.content, opts);
         } catch (err) {
           console.error(`control: onDeliver threw: ${String(err)}`);
+        }
+        return;
+      }
+      if (msg.type === "permission_response") {
+        try {
+          this.#onPermissionResponse?.(msg.requestId, msg.behavior);
+        } catch (err) {
+          console.error(`control: onPermissionResponse threw: ${String(err)}`);
         }
         return;
       }
@@ -514,6 +601,28 @@ export class ControlClient {
       throw new Error("not connected");
     }
     await writeLineNormal(socket, { type: "tool", name, args }, writeTimeoutMs());
+  }
+
+  /**
+   * Send a permission request to the bridge. Travels client→server like
+   * `sendTool` because it originates in claude (the MCP channel-server side).
+   * The bridge will reply with a `permission_response` via `onPermissionResponse`.
+   */
+  async sendPermissionRequest(
+    requestId: string,
+    toolName: string,
+    description: string,
+    inputPreview: string,
+  ): Promise<void> {
+    const socket = this.#socket;
+    if (!socket) {
+      throw new Error("not connected");
+    }
+    await writeLineNormal(
+      socket,
+      { type: "permission_request", requestId, toolName, description, inputPreview },
+      writeTimeoutMs(),
+    );
   }
 
   async close(): Promise<void> {

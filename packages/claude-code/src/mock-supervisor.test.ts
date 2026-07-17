@@ -206,6 +206,20 @@ test("MockSupervisor.triggerCrash synthesizes crash event pair and ends the sess
   expect(ended.reason).toBe("supervisor crashed");
 });
 
+test("MockSupervisor records respond calls and can trigger permission requests", async () => {
+  const sup = new MockSupervisor();
+  const emitted: BridgeEvent[] = [];
+  await sup.start({ sessionId: "s-mock", emit: (e) => emitted.push(e) });
+  sup.triggerPermissionRequest("abcde", "Bash");
+  expect(emitted.find((e) => e.type === "permission.requested")).toMatchObject({
+    requestId: "abcde",
+    toolName: "Bash",
+  });
+  await sup.respond("s-mock", "abcde", "deny");
+  expect(sup.respondCalls).toEqual([{ sessionId: "s-mock", requestId: "abcde", behavior: "deny" }]);
+  await sup.close("s-mock");
+});
+
 test("collect helper rejects when stream stays silent", async () => {
   const iter: AsyncIterable<BridgeEvent> = {
     [Symbol.asyncIterator]() {

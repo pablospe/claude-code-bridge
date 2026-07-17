@@ -35,6 +35,7 @@ async function main(): Promise<void> {
   }
   const endpoint = process.env.CCB_BRIDGE_ENDPOINT;
   const sessionId = process.env.CCB_SESSION_ID;
+  const enablePermissionRelay = process.env.CCB_PERMISSION_RELAY === "1";
   if (!endpoint) {
     console.error("ccb-channel-server: CCB_BRIDGE_ENDPOINT is required");
     process.exitCode = 2;
@@ -61,6 +62,16 @@ async function main(): Promise<void> {
     onTool: async (name, args) => {
       if (!controlClient) throw new Error("control client not initialized");
       await controlClient.sendTool(name, args);
+    },
+    enablePermissionRelay,
+    onPermissionRequest: async (req) => {
+      if (!controlClient) throw new Error("control client not initialized");
+      await controlClient.sendPermissionRequest(
+        req.requestId,
+        req.toolName,
+        req.description,
+        req.inputPreview,
+      );
     },
   });
 
@@ -102,6 +113,13 @@ async function main(): Promise<void> {
     onConnectionLost: (err) => {
       console.error(`ccb-channel-server: control connection lost: ${err?.message ?? "closed"}`);
       void shutdown(4);
+    },
+    onPermissionResponse: (requestId, behavior) => {
+      void handle.respondPermission(requestId, behavior).catch((err: unknown) => {
+        console.error(
+          `ccb-channel-server: permission verdict send failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
     },
   });
 

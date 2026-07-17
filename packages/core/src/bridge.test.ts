@@ -12,9 +12,15 @@ class StubSupervisor implements Supervisor {
   sent: { sessionId: string; messageId: string; content: string }[] = [];
   interrupted: string[] = [];
   closed: string[] = [];
+  readonly responded: Array<{ sessionId: string; requestId: string; behavior: "allow" | "deny" }> =
+    [];
 
   async start(ctx: SupervisorContext): Promise<void> {
     this.ctx = ctx;
+  }
+
+  async respond(sessionId: string, requestId: string, behavior: "allow" | "deny"): Promise<void> {
+    this.responded.push({ sessionId, requestId, behavior });
   }
 
   async sendMessage(sessionId: string, messageId: string, content: string): Promise<void> {
@@ -931,4 +937,352 @@ test("supervisor events with wrong sessionId are dropped and logged", async () =
   } finally {
     console.error = originalError;
   }
+});
+
+function pushPermissionRequest(
+  sup: StubSupervisor,
+  sessionId: string,
+  requestId: string,
+  toolName = "Bash",
+): void {
+  sup.push({
+    type: "permission.requested",
+    sessionId,
+    requestId,
+    toolName,
+    description: "d",
+    inputPreview: "{}",
+  });
+}
+
+async function waitFor(
+  predicate: () => Promise<boolean> | boolean,
+  timeoutMs = 1000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  throw new Error("waitFor timed out");
+}
+
+test("respond(allow) persists permission.resolved before forwarding to the supervisor", async () => {
+  const handle = await bridge.startSession({});
+  pushPermissionRequest(supervisor, handle.id, "abcde");
+
+  await bridge.respond(handle.id, "abcde", "allow");
+
+  expect(supervisor.responded).toEqual([
+    { sessionId: handle.id, requestId: "abcde", behavior: "allow" },
+  ]);
+
+  const stored = await bridge.readStoredEvents(handle.id);
+  const reqIdx = stored.findIndex(
+    (e) => e.type === "permission.requested" && e.requestId === "abcde",
+  );
+  const resIdx = stored.findIndex(
+    (e) => e.type === "permission.resolved" && e.requestId === "abcde" && e.outcome === "allow",
+  );
+  expect(reqIdx).toBeGreaterThanOrEqual(0);
+  expect(resIdx).toBeGreaterThan(reqIdx);
+
+  await bridge.close(handle.id);
+});
+
+test("respond(deny) records approver metadata", async () => {
+  const handle = await bridge.startSession({});
+  pushPermissionRequest(supervisor, handle.id, "fghij");
+
+  await bridge.respond(handle.id, "fghij", "deny", { approver: { userId: "u1" } });
+
+  const stored = await bridge.readStoredEvents(handle.id);
+  const resolved = stored.find((e) => e.type === "permission.resolved" && e.requestId === "fghij");
+  expect(resolved).toEqual({
+    type: "permission.resolved",
+    sessionId: handle.id,
+    requestId: "fghij",
+    outcome: "deny",
+    approver: { userId: "u1" },
+  });
+
+  await bridge.close(handle.id);
+});
+
+test("respond rejects an unknown requestId without touching the wire", async () => {
+  const handle = await bridge.startSession({});
+
+  await expect(bridge.respond(handle.id, "never-opened", "allow")).rejects.toThrow(
+    /no open permission request/,
+  );
+  expect(supervisor.responded).toEqual([]);
+
+  await bridge.close(handle.id);
+});
+
+test("respond is exactly-once under a concurrent double answer", async () => {
+  const handle = await bridge.startSession({});
+  pushPermissionRequest(supervisor, handle.id, "abcde");
+
+  const results = await Promise.allSettled([
+    bridge.respond(handle.id, "abcde", "allow"),
+    bridge.respond(handle.id, "abcde", "deny"),
+  ]);
+
+  const fulfilled = results.filter((r) => r.status === "fulfilled");
+  const rejected = results.filter((r) => r.status === "rejected");
+  expect(fulfilled).toHaveLength(1);
+  expect(rejected).toHaveLength(1);
+  expect(supervisor.responded).toHaveLength(1);
+
+  await bridge.close(handle.id);
+});
+
+test("respond rejects when the supervisor has no respond method", async () => {
+  class NoRespondSupervisor implements Supervisor {
+    ctx: SupervisorContext | undefined;
+    async start(ctx: SupervisorContext): Promise<void> {
+      this.ctx = ctx;
+    }
+    async sendMessage(): Promise<void> {}
+    async interrupt(): Promise<void> {}
+    async close(): Promise<void> {}
+    push(event: BridgeEvent): void {
+      if (!this.ctx) throw new Error("supervisor not started");
+      this.ctx.emit(event);
+    }
+  }
+
+  const sup = new NoRespondSupervisor();
+  const b = new Bridge({
+    storeDir: dir,
+    supervisorFactory: () => sup,
+  });
+  const handle = await b.startSession({});
+  sup.push({
+    type: "permission.requested",
+    sessionId: handle.id,
+    requestId: "abcde",
+    toolName: "Bash",
+    description: "d",
+    inputPreview: "{}",
+  });
+
+  await expect(b.respond(handle.id, "abcde", "allow")).rejects.toThrow(
+    /supervisor does not support respond/,
+  );
+
+  await b.close(handle.id);
+});
+
+test("unanswered request ages out: resolved unanswered-remotely, no verdict sent", async () => {
+  const b = new Bridge({
+    storeDir: dir,
+    supervisorFactory: () => supervisor,
+    permissionTimeoutMs: 50,
+  });
+  const handle = await b.startSession({});
+  pushPermissionRequest(supervisor, handle.id, "abcde");
+
+  await new Promise((r) => setTimeout(r, 120));
+
+  expect(supervisor.responded).toEqual([]);
+  const stored = await b.readStoredEvents(handle.id);
+  const resolved = stored.find((e) => e.type === "permission.resolved" && e.requestId === "abcde");
+  expect(resolved?.type === "permission.resolved" && resolved.outcome).toBe("unanswered-remotely");
+
+  await expect(b.respond(handle.id, "abcde", "allow")).rejects.toThrow(
+    /no open permission request/,
+  );
+
+  await b.close(handle.id);
+});
+
+test("open requests are flushed as aborted on close, timers cleared", async () => {
+  const handle = await bridge.startSession({});
+  pushPermissionRequest(supervisor, handle.id, "abcde");
+  pushPermissionRequest(supervisor, handle.id, "fghij");
+
+  await bridge.close(handle.id);
+
+  const stored = await bridge.readStoredEvents(handle.id);
+  for (const id of ["abcde", "fghij"]) {
+    const resolved = stored.find(
+      (e) => e.type === "permission.resolved" && e.requestId === id && e.outcome === "aborted",
+    );
+    expect(resolved).toBeDefined();
+  }
+
+  // Every permission.requested has a matching resolved.
+  const requested = stored.filter((e) => e.type === "permission.requested");
+  for (const req of requested) {
+    if (req.type !== "permission.requested") continue;
+    const match = stored.find(
+      (e) => e.type === "permission.resolved" && e.requestId === req.requestId,
+    );
+    expect(match).toBeDefined();
+  }
+});
+
+test("close resolves every open request exactly once (no dangling requested)", async () => {
+  // Invariant guard for the abort flush: after close, the number of terminating
+  // permission.resolved events equals the number of permission.requested, and
+  // each id resolves exactly once. The age-out-during-close fix (timer no-ops
+  // while state !== "open") preserves this even if a pending timer fires during
+  // teardown, since it leaves its entry for this flush instead of deleting it
+  // and dropping the resolved via the closing-state early-return.
+  const b = new Bridge({
+    storeDir: dir,
+    supervisorFactory: () => supervisor,
+    permissionTimeoutMs: 100,
+  });
+  const handle = await b.startSession({});
+  pushPermissionRequest(supervisor, handle.id, "abcde");
+  pushPermissionRequest(supervisor, handle.id, "fghij");
+
+  await b.close(handle.id);
+  // Give any (no-opped) age-out timer a chance to have fired after close.
+  await new Promise((r) => setTimeout(r, 150));
+
+  const stored = await b.readStoredEvents(handle.id);
+  const requested = stored.filter((e) => e.type === "permission.requested");
+  const resolved = stored.filter((e) => e.type === "permission.resolved");
+  // Exactly one terminating resolved per requested; no dangling requests and no
+  // spurious extra resolved from a leaked timer firing post-close.
+  expect(resolved).toHaveLength(requested.length);
+  for (const req of requested) {
+    if (req.type !== "permission.requested") continue;
+    const matches = stored.filter(
+      (e) => e.type === "permission.resolved" && e.requestId === req.requestId,
+    );
+    expect(matches).toHaveLength(1);
+  }
+});
+
+test("a duplicate requestId clears the stale timer so it cannot resolve a later request", async () => {
+  const b = new Bridge({
+    storeDir: dir,
+    supervisorFactory: () => supervisor,
+    permissionTimeoutMs: 40,
+  });
+  const handle = await b.startSession({});
+
+  // First request opens timer1 (fires ~t=40). A duplicate with the SAME id
+  // arrives before timer1 fires: without clearing it, timer1 is orphaned (the
+  // map now points at timer2) and will still fire ~t=40.
+  pushPermissionRequest(supervisor, handle.id, "abcde");
+  pushPermissionRequest(supervisor, handle.id, "abcde");
+
+  // Answer the current entry (clears timer2, deletes the entry).
+  await b.respond(handle.id, "abcde", "allow");
+
+  // Delay, then open a FRESH request reusing the same id (timer3, fires ~t=65).
+  await new Promise((r) => setTimeout(r, 25));
+  pushPermissionRequest(supervisor, handle.id, "abcde");
+
+  // Wait until ~t=50: the orphaned timer1 has fired (t=40) but timer3 has not
+  // legitimately aged out yet (t=65). Pre-fix, timer1 finds the live third
+  // entry and wrongly resolves it as unanswered-remotely.
+  await new Promise((r) => setTimeout(r, 25));
+
+  const stored = await b.readStoredEvents(handle.id);
+  // Pre-fix: orphaned timer1 fires, finds the live entry, and wrongly resolves
+  // the still-open third request as unanswered-remotely. Post-fix: timer1 was
+  // cleared at the duplicate, so the only resolved so far is the explicit allow.
+  const resolved = stored.filter(
+    (e) => e.type === "permission.resolved" && e.requestId === "abcde",
+  );
+  expect(resolved).toHaveLength(1);
+  expect(resolved[0]?.type === "permission.resolved" && resolved[0].outcome).toBe("allow");
+  expect(
+    stored.some(
+      (e) =>
+        e.type === "permission.resolved" &&
+        e.requestId === "abcde" &&
+        e.outcome === "unanswered-remotely",
+    ),
+  ).toBe(false);
+
+  await b.close(handle.id);
+});
+
+test("supervisor-initiated session end aborts open requests", async () => {
+  const handle = await bridge.startSession({});
+  pushPermissionRequest(supervisor, handle.id, "abcde");
+
+  supervisor.push({ type: "session.ended", sessionId: handle.id, reason: "crash" });
+
+  await waitFor(async () => {
+    const stored = await bridge.readStoredEvents(handle.id);
+    return stored.some(
+      (e) => e.type === "permission.resolved" && e.requestId === "abcde" && e.outcome === "aborted",
+    );
+  });
+});
+
+test("respond rejects after a store append failure and sends no verdict", async () => {
+  // Store wrapper that delegates to a real JsonlEventStore but rejects the
+  // append for permission.resolved events, mirroring the FailEndedStore seam.
+  class FailResolvedStore implements BridgeEventStore {
+    readonly #real: JsonlEventStore;
+    constructor(path: string) {
+      this.#real = new JsonlEventStore(path);
+    }
+    append(event: BridgeEvent): Promise<void> {
+      if (event.type === "permission.resolved") {
+        return Promise.reject(new Error("store append boom"));
+      }
+      return this.#real.append(event);
+    }
+    readAll(): Promise<BridgeEvent[]> {
+      return this.#real.readAll();
+    }
+    close(): Promise<void> {
+      return this.#real.close();
+    }
+  }
+
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    const b = new Bridge({
+      storeDir: dir,
+      supervisorFactory: () => supervisor,
+      storeFactory: (_id, path) => new FailResolvedStore(path),
+    });
+    const handle = await b.startSession({});
+    pushPermissionRequest(supervisor, handle.id, "abcde");
+
+    await expect(b.respond(handle.id, "abcde", "allow")).rejects.toThrow("store append boom");
+    expect(supervisor.responded).toEqual([]);
+
+    await b.close(handle.id).catch(() => undefined);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test("permission.requested arriving during teardown does not open a timer", async () => {
+  const handle = await bridge.startSession({});
+
+  // Drive the session into closing/closed via a supervisor-initiated end.
+  supervisor.push({ type: "session.ended", sessionId: handle.id, reason: "crash" });
+  await waitFor(async () => {
+    const stored = await bridge.readStoredEvents(handle.id);
+    return stored.some((e) => e.type === "session.ended");
+  });
+
+  // A late permission request must be dropped by the closing/closed guard
+  // before any timer/registry entry is opened.
+  pushPermissionRequest(supervisor, handle.id, "late-id");
+
+  await new Promise((r) => setTimeout(r, 30));
+
+  const stored = await bridge.readStoredEvents(handle.id);
+  expect(
+    stored.find((e) => e.type === "permission.resolved" && e.requestId === "late-id"),
+  ).toBeUndefined();
+  expect(
+    stored.find((e) => e.type === "permission.requested" && e.requestId === "late-id"),
+  ).toBeUndefined();
 });

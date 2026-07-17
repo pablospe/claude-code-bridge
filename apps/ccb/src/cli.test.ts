@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeCodeSupervisor, MockSupervisor } from "@ccb/claude-code";
-import { selectSupervisorFactory } from "./cli.ts";
+import { parseAllowTools, selectSupervisorFactory } from "./cli.ts";
 
 const CLI_PATH = new URL("./cli.ts", import.meta.url).pathname;
 
@@ -226,6 +226,55 @@ test(
   },
   { timeout: 15_000 },
 );
+
+test("ccb api --help lists --allow-tools", async () => {
+  const { exitCode, stdout } = await runCli(["api", "--help"]);
+  expect(exitCode).toBe(0);
+  expect(stdout).toMatch(/--allow-tools/);
+});
+
+test("ccb api rejects --allow-tools all combined with names", async () => {
+  const { exitCode, stderr } = await runCli([
+    "api",
+    "--allow-tools",
+    "all,Read",
+    "--supervisor",
+    "mock",
+  ]);
+  expect(exitCode).not.toBe(0);
+  expect(stderr).toMatch(/'all' cannot be combined/);
+});
+
+test("ccb api rejects empty --allow-tools entries", async () => {
+  const { exitCode, stderr } = await runCli([
+    "api",
+    "--allow-tools",
+    "Read,,Grep",
+    "--supervisor",
+    "mock",
+  ]);
+  expect(exitCode).not.toBe(0);
+  expect(stderr).toMatch(/comma-separated tool names/);
+});
+
+test("ccb api rejects --allow-tools tokens with internal whitespace", async () => {
+  const { exitCode, stderr } = await runCli([
+    "api",
+    "--allow-tools",
+    "Read Bash",
+    "--supervisor",
+    "mock",
+  ]);
+  expect(exitCode).not.toBe(0);
+  expect(stderr).toMatch(/letters, digits/);
+});
+
+test("parseAllowTools parses names and the all sentinel", () => {
+  expect(parseAllowTools("Read, Grep")).toEqual(["Read", "Grep"]);
+  expect(parseAllowTools("all")).toBe("all");
+  expect(parseAllowTools("Read,Bash")).toEqual(["Read", "Bash"]);
+  expect(() => parseAllowTools("Read Bash")).toThrow(/letters, digits/);
+});
 
 test("selectSupervisorFactory('mock') returns a MockSupervisor", () => {
   const factory = selectSupervisorFactory({ supervisor: "mock", channels: "dev-flag" });

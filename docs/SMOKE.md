@@ -574,3 +574,61 @@ forced `tool_choice`. Setting `ANTHROPIC_BASE_URL=http://127.0.0.1:18485`
 redirects ANY anthropic-SDK tool to the facade with zero code changes.
 litellm's anthropic provider (`model="anthropic/ccb-claude",
 api_base="http://127.0.0.1:18485"`) also routes here.
+
+### Smoke 7 — tool-enabled api (`--allow-tools`)
+
+This exercises the M5 permission relay through the facade: with `--allow-tools`,
+claude's built-in tools are enabled, the allowlist is pre-approved (no prompt),
+and anything else that prompts is auto-denied by the policy and degrades to text
+instead of erroring. Sessions act on the directory where `ccb api` was started,
+so the server **must** be launched from the repo root (where `README.md` lives).
+
+Terminal 1 — start the server with Read + Bash pre-approved:
+
+```bash
+bun apps/ccb/src/cli.ts api --allow-tools Read,Bash
+#   ccb api listening on http://127.0.0.1:18485/v1
+```
+
+Terminal 2 — run the smoke:
+
+```bash
+uv run --with openai scripts/tools-smoke.py
+```
+
+Expected output (two steps then `SMOKE OK`, exit 0):
+
+```
+[1/2] allowed tool (Read README.md)...
+  finish_reason=stop reply='The first heading in README.md says: "# Claude Code Bridge"'
+[2/2] denied tool (Write a file)...
+  finish_reason=stop reply='DENIED'
+SMOKE OK
+```
+
+Step 1 asks claude to use its **allowed** Read tool to read `README.md` and
+report the first heading (asserts the reply carries repo-identifying content).
+Step 2 asks it to use its **denied** Write tool to create a file; the policy
+auto-denies, the turn degrades to text, and no file is created.
+
+What to verify in `.ccb-data/<session>.jsonl`:
+
+- The allowed Read does **not** surface a `permission.requested` — pre-approved
+  tools run silently inside claude (the reply with the heading is the evidence).
+- The denied Write surfaces a `permission.requested` (`toolName:"Write"`)
+  immediately followed by a `permission.resolved` with `outcome:"deny"`, e.g.:
+
+  ```json
+  {"type":"permission.requested","toolName":"Write","inputPreview":"{\"file_path\":\".../ccb-smoke-should-not-exist.txt\",...}"}
+  {"type":"permission.resolved","requestId":"...","outcome":"deny"}
+  ```
+
+- `ccb-smoke-should-not-exist.txt` is **not** created in the cwd.
+
+Live-run result: passed full-stack against real `claude` 2.1.175 on
+2026-06-13 — the Read returned `# Claude Code Bridge`, the Write produced a
+`permission.requested(Write)` → `permission.resolved(outcome:"deny")` pair and
+degraded to `DENIED` text with `finish_reason=stop`, and no stray file was
+written. The underlying permission-relay protocol was first proven by
+`scripts/spike-permission`; see
+[`docs/2026-06-12-spike-findings.md`](./2026-06-12-spike-findings.md).

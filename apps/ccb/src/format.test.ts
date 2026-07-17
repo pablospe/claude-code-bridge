@@ -267,3 +267,27 @@ test("formatters do not throw for any sample", () => {
     expect(() => formatPretty(event)).not.toThrow();
   }
 });
+
+test("formatPretty renders permission.requested", () => {
+  expect(
+    formatPretty({
+      type: "permission.requested",
+      sessionId: "s",
+      requestId: "abcde",
+      toolName: "Bash",
+      description: "run ls",
+      inputPreview: '{"command":"ls"}',
+    }),
+  ).toBe('[permission.requested] abcde Bash "run ls"');
+});
+
+test("formatPretty renders permission.resolved", () => {
+  expect(
+    formatPretty({
+      type: "permission.resolved",
+      sessionId: "s",
+      requestId: "abcde",
+      outcome: "allow",
+    }),
+  ).toBe("[permission.resolved] abcde allow");
+});

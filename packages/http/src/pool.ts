@@ -1,8 +1,10 @@
 import type { ClaudeCodeBridge } from "@ccb/core";
+import type { PermissionPolicy } from "./permission-policy.ts";
 
 export interface SessionPoolOptions {
   readonly bridge: ClaudeCodeBridge;
   readonly size: number;
+  readonly permissionPolicy?: PermissionPolicy;
 }
 
 interface Waiter {
@@ -28,12 +30,14 @@ export class SessionPool {
   readonly #idle: string[] = [];
   readonly #waiters: Waiter[] = [];
   readonly #checkedOut = new Set<string>();
+  readonly #policy: PermissionPolicy | undefined;
   #closed = false;
 
   constructor(options: SessionPoolOptions) {
     if (options.size < 1) throw new Error("pool size must be >= 1");
     this.#bridge = options.bridge;
     this.#size = options.size;
+    this.#policy = options.permissionPolicy;
   }
 
   /** The bridge the pool wraps; turn executors run against it. */
@@ -45,6 +49,7 @@ export class SessionPool {
     try {
       for (let i = 0; i < this.#size; i++) {
         const { id } = await this.#bridge.startSession({});
+        this.#watchPermissions(id);
         this.#idle.push(id);
       }
     } catch (err) {
@@ -77,6 +82,32 @@ export class SessionPool {
     const ids = [...this.#idle.splice(0), ...this.#checkedOut];
     this.#checkedOut.clear();
     await Promise.allSettled(ids.map((id) => this.#bridge.close(id)));
+  }
+
+  /**
+   * Answer permission prompts for one session for its lifetime. The loop ends
+   * naturally when the session's event bus closes (session closed/replaced).
+   * respond failures are logged, never fatal: the request either aged out or
+   * the session is tearing down; a genuinely lost verdict surfaces as the
+   * turn's own timeout.
+   */
+  #watchPermissions(sessionId: string): void {
+    const policy = this.#policy;
+    if (!policy) return;
+    void (async () => {
+      for await (const event of this.#bridge.events(sessionId)) {
+        if (event.type !== "permission.requested") continue;
+        try {
+          await this.#bridge.respond(sessionId, event.requestId, policy.decide(event.toolName));
+        } catch (err) {
+          console.error(
+            `SessionPool: permission respond failed for ${event.requestId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+    })();
   }
 
   #acquire(): Promise<string> {
@@ -114,6 +145,7 @@ export class SessionPool {
     if (this.#closed) return;
     try {
       const { id } = await this.#bridge.startSession({});
+      this.#watchPermissions(id);
       this.#release(id);
     } catch (err) {
       console.error(`SessionPool: respawn failed: ${String(err)}`);
