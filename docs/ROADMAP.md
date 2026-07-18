@@ -10,7 +10,7 @@ This is the durable entry point for the project's milestone documentation. Indiv
 | M2 | shipped     | [M2.md](./M2.md)               | Managed launch: bridge spawns `claude` itself via `node-pty`, supervisor-crash event emission, start timeout, plugin packaging.  |
 | M3 | shipped     | [M3.md](./M3.md)               | Observational hook relay: `PreToolUse` / `PostToolUse` / `Stop` surfaced as `BridgeEvent.tool.event` records; phase 2 adds more. |
 | M4 | locked      | [M4.md](./M4.md)               | Publishing: plugin manifest polish, hook relay in the plugin, npm release as the scoped `@pablospe/claude-code-bridge` package (the bare name is taken).              |
-| M5 | implemented | [M5.md](./M5.md), [plan](./2026-06-12-tool-enabled-api-plan.md) | Permission-prompt routing: surface tool-approval requests to the consumer and route allow / deny decisions back over channels. Shipped as the consumer: `ccb api --allow-tools` (pre-approve an allowlist, auto-deny the rest). |
+| M5 | shipped     | [M5.md](./M5.md), [plan](./2026-06-12-tool-enabled-api-plan.md) | Permission-prompt routing: surface tool-approval requests to the consumer and route allow / deny decisions back over channels. Shipped as the consumer: `ccb api --allow-tools` (pre-approve an allowlist, auto-deny the rest). |
 
 ## Possible later work (consumer-demand-gated)
 
@@ -23,6 +23,15 @@ land if a concrete consumer asks for them.
   ACP-compatible orchestrators.
 - **`ccb attach <claude-pid>`** — attach to an already-running `claude` instead of managed
   launch. Deferred for discovery/state-ambiguity reasons; revisit if a consumer asks.
+- **`bridge_send` (agent-to-agent addressing)** — a fourth outbound MCP tool,
+  `bridge_send { to: <sessionId>, content }`, routed by the bridge directly into a peer
+  session's channel, plus a `from` meta key on delivery and a policy gate on who may address
+  whom (same spirit as the M5 permission relay). Makes two-way agent-to-agent messaging
+  first-class. Not required for the pattern itself: a hub-and-spoke router consumer
+  (subscribe to `events()` of N sessions on one bridge, cross-forward `agent.reply` content)
+  already does this over the existing API, with termination policy owned by the router. The
+  tool only moves routing from the consumer into the bridge; lands if agent-to-agent becomes
+  a concrete consumer use case.
 
 ## What stays out (for now)
 
